@@ -1,27 +1,27 @@
 name: Claude Code Review
 
+# 本仓库是 worktree-pr-flow Claude Code Skill 自身。每个 PR 触发的 review 必须从
+# **专业 Skill Creator** 角度审查 skill 内容,而不是通用代码 review。
+# 评审维度详见下面 prompt;扩展时同步改 templates/claude-code-review.yml(给其他
+# 安装本 skill 的项目用,持续保持通用)。
+
 on:
   pull_request:
-    types: [opened, synchronize, ready_for_review, reopened]
-    # Optional: Only run on specific file changes
-    # paths:
-    #   - "src/**/*.ts"
-    #   - "src/**/*.tsx"
-    #   - "src/**/*.js"
-    #   - "src/**/*.jsx"
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths-ignore:
+      - "**.lock"
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   claude-review:
-    # Optional: Filter by PR author
-    # if: |
-    #   github.event.pull_request.user.login == 'external-contributor' ||
-    #   github.event.pull_request.user.login == 'new-developer' ||
-    #   github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'
-
     runs-on: ubuntu-latest
+    timeout-minutes: 12          # skill 内容多文件,留足审完时间;触发熔断防跑飞
     permissions:
       contents: read
-      pull-requests: read
+      pull-requests: write       # 留 review 评论
       issues: read
       id-token: write
 
@@ -31,14 +31,61 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Run Claude Code Review
+      - name: Run Claude Code Review (Skill Creator perspective)
         id: claude-review
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
-          plugins: 'code-review@claude-code-plugins'
-          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
-          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
-          # or https://code.claude.com/docs/en/cli-reference for available options
+          # 不用 /code-review 通用插件——这是个 Skill 仓库,review 维度需特化。
+          # 自定义 prompt:让 Claude 以 Senior Skill Creator 身份审。
+          prompt: |
+            You are a senior Claude Code Skill author reviewing this PR. The repository is the
+            `worktree-pr-flow` Skill itself (a published skill that teaches a worktree → PR →
+            auto-merge → babysit-to-merged workflow with Claude Code Actions integration).
 
+            Your review is **not** generic code review. Evaluate against these Skill-Creator dimensions:
+
+            1. **Frontmatter discoverability** — does `SKILL.md` `description:` cover the user's likely
+               trigger phrases (Chinese + English)? Do new keywords get added when triggers shift?
+               Is `name:` kebab-case and unchanged?
+            2. **Anti-pattern explicitness** — when behavior changes, are real failure modes
+               documented (not just happy path)? Each anti-pattern in `references/anti-patterns.md`
+               must trace to a concrete failure scenario, not abstract advice.
+            3. **Verbatim safety markers** — sections labeled "verbatim / iron law / 铁律" must NOT be
+               casually edited. Each rule has a documented incident behind it. Flag any soft-touch
+               edit to `references/monitor-template.md` 6 iron laws as **blocker**.
+            4. **Cross-doc consistency** — counts and labels match across files:
+               - SKILL.md "8 中间状态" vs references/anti-patterns.md A–H (8 anti-patterns)
+               - blockers.md numbering 1–8 referenced consistently in SKILL.md / CHECKLIST.md
+               - Quality-gate.md timing windows (档位 A 2/8min, 档位 B 5/15min) match SKILL.md / CHECKLIST.md
+            5. **Reference orthogonality** — each `references/<topic>.md` covers one orthogonal concern:
+               quality-gate.md (review eval), monitor-template.md (status tracking), decision-table.md
+               (babysit decisions), anti-patterns.md (failure modes), blockers.md (allowed stops),
+               workflow-yaml.md (config reference), superset-integration.md (host integration),
+               official-docs-cheatsheet.md (upstream gotchas). Flag overlap or miscategorization.
+            6. **Project adaptation** — skills must list project-specific variables users replace
+               on first use. Verify the table at SKILL.md "项目适配" stays complete and accurate.
+            7. **DoD measurability** — success must be a measurable state (`state=MERGED`), not vague
+               ("works fine", "review complete"). Flag any softening of DoD.
+            8. **Trigger keyword preservation** — the `description:` field accumulates Chinese + English
+               trigger keywords over time. Removing or "translating" them breaks user discovery. Flag
+               any deletion or auto-translation of existing keywords as **major**.
+            9. **Internal link integrity** — every `[text](path/to/file.md)` and `[text](#anchor)` must
+               resolve. Catch path drift after file moves/renames.
+            10. **Tone alignment** — the skill's deliberate voice is "anti-pattern-explicit, real-failure-driven,
+                Chinese-friendly, English-fallback, imperative". Don't suggest neutralizing it to match
+                generic Anthropic skills (different design philosophy). When in doubt, preserve.
+
+            Format your output:
+            - **Blocking issues** (must fix before merge): ≤ 3 items, file:line + reason + fix
+            - **Major suggestions** (worth discussing): ≤ 5 items
+            - **Minor / Nit**: skip unless cross-doc inconsistency or broken link
+            - **What this PR does well**: 1–2 sentences, optional
+
+            If the PR has no issues across all 10 dimensions, post a single approval review with
+            "Looks good — checked all 10 Skill-Creator dimensions, no blocking issues." Do not
+            invent issues to look thorough.
+          claude_args: |
+            --max-turns 6
+            --model claude-sonnet-4-6
+          use_sticky_comment: true   # 同一 PR 多次 review 更新同一条

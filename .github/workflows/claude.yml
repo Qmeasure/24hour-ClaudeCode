@@ -1,5 +1,10 @@
 name: Claude Code
 
+# 本仓库是 worktree-pr-flow Claude Code Skill 自身。`@claude` 在评论 / issue 触发时,
+# Claude 应当以**专业 Skill Creator** 视角处理(改 skill 文档、修反模式、调 reference
+# 一致性、加新 trigger 关键词等),而不是通用助手视角。
+# 用 --append-system-prompt 注入 Skill Creator 人设。
+
 on:
   issue_comment:
     types: [created]
@@ -10,6 +15,10 @@ on:
   pull_request_review:
     types: [submitted]
 
+concurrency:
+  group: claude-${{ github.event.issue.number || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   claude:
     if: |
@@ -18,33 +27,29 @@ jobs:
       (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
       (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
     runs-on: ubuntu-latest
+    timeout-minutes: 18           # 改 skill 内容常跨多文件,留多步修复时间
     permissions:
-      contents: write       # Allow @claude to commit fixes when asked
-      pull-requests: write  # Allow @claude to post comments and update PRs
-      issues: write         # Allow @claude to comment on issues
+      contents: write             # 允许 @claude commit 修复
+      pull-requests: write        # 评论 / 改 PR 描述
+      issues: write               # 评论 issue
       id-token: write
-      actions: read # Required for Claude to read CI results on PRs
+      actions: read               # 读 CI 结果
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          fetch-depth: 0          # 全量历史,允许看 git log/blame
 
-      - name: Run Claude Code
+      - name: Run Claude Code (Skill Creator persona)
         id: claude
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-
-          # This is an optional setting that allows Claude to read CI results on PRs
           additional_permissions: |
             actions: read
-
-          # Optional: Give a custom prompt to Claude. If this is not specified, Claude will perform the instructions specified in the comment that tagged it.
-          # prompt: 'Update the pull request description to include a summary of changes.'
-
-          # Optional: Add claude_args to customize behavior and configuration
-          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
-          # or https://code.claude.com/docs/en/cli-reference for available options
-          # claude_args: '--allowed-tools Bash(gh pr *)'
-
+          claude_args: |
+            --max-turns 18
+            --model claude-sonnet-4-6
+            --disallowed-tools "Bash(git push --force *),Bash(rm -rf *)"
+            --append-system-prompt "You are a senior Claude Code Skill author maintaining the worktree-pr-flow Skill repo. When a user asks you to fix, refactor, or extend skill content, prioritize: (1) discoverability — preserve and extend the bilingual (Chinese + English) trigger keywords in SKILL.md frontmatter description; never auto-translate Chinese to English. (2) anti-pattern explicitness — when adding new behavior, document the failure mode it prevents. (3) verbatim markers — any section labeled '铁律' / 'iron law' / 'verbatim' must not be casually edited; each rule traces to a real production incident. (4) cross-doc consistency — counts (e.g. '8 anti-patterns'), section labels, and timing windows must agree across SKILL.md / CHECKLIST.md / references/. (5) reference orthogonality — each references/<topic>.md owns one concern; flag overlap. (6) project-adaptation table completeness. (7) DoD measurability (e.g. state=MERGED, never 'works fine'). The skill's deliberate voice is anti-pattern-explicit, real-failure-driven, Chinese-friendly, English-fallback, imperative. Do not neutralize this voice to match generic Anthropic skills. When in doubt, preserve existing wording and propose a diff with rationale rather than rewriting wholesale."

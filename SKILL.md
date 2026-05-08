@@ -23,9 +23,12 @@ description: |
 
 如果你看到的反馈来源是 `claude[bot]`(reviewers 字段里出现) → 走档位 A 时序。
 
-## ⚠️ 一开始就要内化的 8 条反模式(违反任意一条 = 工作未完成)
+## ⚠️ 8 个"看起来完成了其实没完成"的中间状态
 
-下列状态**全部不算完成**,只是中间步骤:
+> 命名澄清:本节列出的是**中间状态**(work-not-done states),都需要继续推进。完整的**8 类反模式**(real-incident-driven failure modes)放在 [references/anti-patterns.md](references/anti-patterns.md) 的 A–H 类——本节顶部的 5 个"❌"是其中 A 类(中途停下问用户)的最常见话术,完整集合去 references。
+
+### 8 个不算完成的中间状态(全部要继续)
+
 - ✅ 代码写完了 → 继续
 - ✅ typecheck / lint / test 都过了 → 继续
 - ✅ commit 创建了 → 继续
@@ -35,12 +38,15 @@ description: |
 - ✅ 改完反馈但没 enable auto-merge → 继续
 - ✅ enable 了 auto-merge 但 PR 还没 MERGED → 继续 babysit 直到 MERGED 或 60min cap
 
-**典型反模式(如果你正想说这种话,停下来直接干完再说话):**
+### A 类反模式高频话术(如果你正想说这种话,停下来直接干完再说话)
+
 - ❌ "代码改完了,要不要 push?" → 用户授权已经在 worktree 入口给过了,直接 push
 - ❌ "PR 开好了,要不要 enable auto-merge?" → 直接 enable,--auto 自己会等 CI
 - ❌ "测试都过了,等你 review 一下" → 用户的 review 在 PR 页面做,不在 chat 里做
 - ❌ "改完了,给你 diff 看一下" → 直接走完所有步骤再贴 PR 链接,不要在 chat 里 mock review
 - ❌ "先停下让你确认方向" → 方向确认应该在动手前;动手后只在遇到真正的 blocker 时停
+
+完整 A–H 8 类反模式见 [references/anti-patterns.md](references/anti-patterns.md)。
 
 **唯一允许停下来的边界**:见 [references/blockers.md](references/blockers.md)(共 8 类,其中 #7 / #8 是 Actions 专属)。
 
@@ -347,6 +353,10 @@ git branch -d <branch-name>
 ---
 
 ## 索引
+
+### 入口
+- [README.md](README.md) — GitHub-facing 介绍 / 快速开始 / 文件地图(给浏览仓库的人看)
+- 本文件(SKILL.md)— Claude 加载的主入口(9 步流程 + DoD)
 
 ### 首次配置
 - [SETUP.md](SETUP.md) — **零基础**首次在仓库配置 Claude Code Actions(必读,如果仓库还没配)
