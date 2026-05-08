@@ -1,14 +1,40 @@
 # Claude Code Actions 零基础首次配置
 
-> 这份指南面向**从未在仓库里部署过 Claude Code Actions** 的开发者。跟着 6 步走完,你的仓库会拥有:
+> 这份指南面向**从未在仓库里部署过 Claude Code Actions** 的开发者。完成后:
 > - PR 自动 review(每次开 PR / push 自动触发)
 > - `@claude` 在 PR 评论中提问 / 委托修复
 >
 > 用 **Claude Pro/Max 订阅**做认证(走 OAuth token,无需 Anthropic API Key)。
->
-> 完成时间:10–15 分钟。
->
-> 完成后再进入 [SKILL.md](SKILL.md) 的 9 步 PR 流程。
+
+---
+
+## 🚀 Quick path:一键配置(推荐)
+
+仓库 root 跑这一行,完成 Step 1–6 全部交互式步骤:
+
+```bash
+bash scripts/configure-actions.sh
+```
+
+会引导你:
+1. 检查 gh CLI / claude CLI / git 装好且登录
+2. 打开浏览器装 Claude GitHub App
+3. 跑 `claude setup-token` 生成 OAuth token,自动 `gh secret set` 设进去
+4. 把 `templates/claude.yml` + `templates/claude-code-review.yml` 复制到 `.github/workflows/`
+5. commit + push
+6. 跑 `check-actions.sh` 自检健康
+
+完成后回到 [SKILL.md](SKILL.md) 跑 9 步 PR 流程。
+
+**用 Superset 多 worktree**:还要顺便跑 `bash scripts/install-superset-config.sh` 注入 `.superset/config.json`,让每次开新 workspace 自动校验配置。详见 [references/superset-integration.md](references/superset-integration.md)。
+
+---
+
+## 🛠️ 手动 path:6 个步骤逐个走(脚本失败 / 想完全掌控时用)
+
+完成时间:10–15 分钟。
+
+完成后再进入 [SKILL.md](SKILL.md) 的 9 步 PR 流程。
 
 ---
 

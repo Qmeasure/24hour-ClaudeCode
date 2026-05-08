@@ -4,9 +4,35 @@
 
 ## 跑这个 skill 之前
 
-> ⚠️ **重要**:本 skill 假设目标仓库已部署 Claude Code Actions(secret + workflow YAML)。如果是新仓库还没配,**先按 [SETUP.md](SETUP.md) 走完首次配置**(10–15 分钟),否则跑到 step 6 会卡住等不到 review。
+> ⚠️ **重要**:本 skill 假设目标仓库已部署 Claude Code Actions(secret + workflow YAML)。
 >
-> 已配过的仓库(已有 `.github/workflows/claude*.yml` + `gh secret list` 含 `CLAUDE_CODE_OAUTH_TOKEN`)直接跑。
+> **零基础一键配置**:在目标 repo root 跑 `bash scripts/configure-actions.sh`,15 分钟搞定全部步骤。
+>
+> 不想用脚本就按 [SETUP.md](SETUP.md) 手动 6 步配。
+>
+> 已配过的仓库(已有 `.github/workflows/claude*.yml` + `gh secret list` 含 `CLAUDE_CODE_OAUTH_TOKEN`)直接跑 skill,不用重配。
+
+## Superset 用户:推荐安装链路
+
+如果你用 [Superset](https://docs.superset.sh) 客户端管理多 worktree,完整安装步骤是:
+
+```bash
+# 1. 装 skill(下面三选一)
+ln -s "<SKILL_DIR>" ~/.claude/skills/worktree-pr-flow
+
+# 2. 在主 repo 一次性配置 Claude Code Actions
+cd <YOUR_REPO_ROOT>
+bash ~/.claude/skills/worktree-pr-flow/scripts/configure-actions.sh
+
+# 3. 注入 Superset 配置(自动每个新 workspace 校验 Actions)
+bash ~/.claude/skills/worktree-pr-flow/scripts/install-superset-config.sh
+git add .superset/ .github/ && git commit -m "wire up Claude Code Actions" && git push
+
+# 4. 之后每次 Superset 开新 workspace,setup 钩子自动跑 check-actions.sh
+#    (失败会提示你回主 repo 跑 configure-actions.sh)
+```
+
+详细工作流见 [references/superset-integration.md](references/superset-integration.md)。
 
 ## 选项 A:软链(推荐,单点维护)
 

@@ -1,0 +1,15 @@
+{
+  "_comment": "Superset workspace config for projects using worktree-pr-flow skill. Setup 在新 workspace 创建时跑,verify Claude Code Actions 配置。teardown 提示用户清理本地 worktree branch。详见 references/superset-integration.md。",
+
+  "setup": [
+    "echo '▸ Verifying Claude Code Actions config in $SUPERSET_ROOT_PATH'",
+    "if [ -f \"$SUPERSET_ROOT_PATH/scripts/check-actions.sh\" ]; then bash \"$SUPERSET_ROOT_PATH/scripts/check-actions.sh\" || echo '⚠ Action 配置不全。在 root repo 跑 bash scripts/configure-actions.sh 一次性修。'; else echo 'ℹ scripts/check-actions.sh 不存在(skill 没装到本 repo?跳过校验)'; fi"
+  ],
+
+  "teardown": [
+    "echo '▸ Workspace teardown for $SUPERSET_WORKSPACE_NAME'",
+    "echo '提醒:本 worktree 对应的 PR 是否已 MERGED?如果是,在主 checkout 上跑:git worktree remove $SUPERSET_WORKSPACE_PATH && git branch -d <branch-name>'"
+  ],
+
+  "run": []
+}

@@ -66,14 +66,29 @@ git status --short
 # 4) 用户已给出关联 issue 编号(GH issue 或项目管理工具 ID);没有就问一次
 
 # 5) 仓库已配 Claude Code Actions(本 skill 的核心依赖)
+# 推荐用 skill 自带的检查脚本:
+bash "${SUPERSET_ROOT_PATH:-$(git rev-parse --show-toplevel)}/scripts/check-actions.sh" -v
+# 退出码 0 = 全部 OK;1 = ERROR(必须修);2 = WARN(能跑但建议修)
+
+# 或手动检查:
 gh secret list -R <owner>/<repo> | grep -E '^CLAUDE_CODE_OAUTH_TOKEN|^ANTHROPIC_API_KEY'
 # 期望:看到 CLAUDE_CODE_OAUTH_TOKEN 或 ANTHROPIC_API_KEY 至少一个
 
 ls .github/workflows/ 2>/dev/null | grep -E 'claude.*\.ya?ml'
 # 期望:至少一个 claude*.yml 文件
 
-# 如果仓库没配 → **不要硬上**,告诉用户跳到 SETUP.md 走完首次配置(10–15 分钟),然后回来跑这个 skill
+# 如果仓库没配 → **不要硬上**,告诉用户在主 checkout 跑:
+#   bash scripts/configure-actions.sh
+# 一键配完(10–15 分钟,见 SETUP.md),然后回来跑这个 skill。
 ```
+
+### Superset 用户额外检查
+
+如果环境里有 `$SUPERSET_WORKSPACE_PATH`(说明在 Superset workspace 里):
+
+- workspace 创建时 setup 钩子已自动跑了 `check-actions.sh`,理论上 #5 已通过
+- 如果 setup 当时报了 ERROR,你应该已经看到红色提示了 → 在主 checkout 跑 `bash scripts/configure-actions.sh` 修
+- 详见 [references/superset-integration.md](references/superset-integration.md)
 
 **如果 #4 缺失**:可以问用户一次"这个 PR 关联哪个 issue 编号?需要写进 PR body 的 `Closes` 句子让 issue 自动关闭"。这是允许的提问之一。
 
@@ -335,6 +350,9 @@ git branch -d <branch-name>
 
 ### 首次配置
 - [SETUP.md](SETUP.md) — **零基础**首次在仓库配置 Claude Code Actions(必读,如果仓库还没配)
+- `scripts/configure-actions.sh` — **一键交互式**配置脚本(SETUP.md Quick path)
+- `scripts/check-actions.sh` — 健康检查(Superset setup 自动跑;人工排查也用)
+- `scripts/install-superset-config.sh` — 注入 `.superset/config.json`
 
 ### 流程参考
 - [references/workflow-yaml.md](references/workflow-yaml.md) — 30+ Actions 参数 + GitHub Actions 字段 + claude_args CLI flag 全参考
@@ -343,8 +361,15 @@ git branch -d <branch-name>
 - [references/decision-table.md](references/decision-table.md) — babysit 事件处理矩阵
 - [references/anti-patterns.md](references/anti-patterns.md) — 失败模式集合(A–H 共 8 类,H 是 Actions 专属)
 - [references/blockers.md](references/blockers.md) — 唯一允许停下来问用户的 8 个场景
+- [references/superset-integration.md](references/superset-integration.md) — Superset 多 worktree 流水线接入(钩子时机 / env / 团队共享 vs 个人覆盖)
+- [references/official-docs-cheatsheet.md](references/official-docs-cheatsheet.md) — 官方 docs 关键 10 条(OIDC / 嵌套 workflow / 不能改 .github/workflows / Bash 默认禁 / MCP / settings 等)
 - [CHECKLIST.md](CHECKLIST.md) — 自审速查表(每 step 一条)
 - [INSTALL.md](INSTALL.md) — skill 自身的安装方法
+
+### 模板(`templates/`)
+- `templates/claude.yml` — `@claude` 交互 workflow 模板
+- `templates/claude-code-review.yml` — 自动 PR review workflow 模板
+- `templates/superset-config.json` — Superset 配置模板
 
 ---
 
