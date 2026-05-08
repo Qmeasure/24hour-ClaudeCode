@@ -4,16 +4,46 @@
 
 ## 0. 时序硬规则(不能跳)
 
+时序分两档,看你仓库装的是哪种 review agent:
+
+### 档位 A:Claude Code Action 主导(自建 `.github/workflows/claude-code-review.yml`)
+
 | 时间点 | 动作 |
 |---|---|
 | t = 0 | gh pr create 完成 |
 | t = 0 | 立刻 arm Monitor(`reviewers=` 字段会驱动新事件) |
-| t < 5 min | **不进 6b**。即使内置 review(如 claude-review)已经 "no concerns" / "looks good",也必须等其他 agent 出声 |
+| t < 2 min | **不进 6b**。Action 冷启动(runner 排队 + bun 安装 + checkout)需要 30–60s,后面才是 Claude 真正在看 |
+| 2 min ≤ t < 8 min | 收到反馈 → 立刻进 6b;没反馈 → 继续等 |
+| t = 8 min | 强制进 6b(有几条算几条);全部沉默 → 直接 step 7 |
+| 整个 gate ≤ 60 min | 超时直接 step 7(强制 cap) |
+
+**为什么是 2 分钟**:Claude Code Action 通常 30s–2min 内出第一条 review。但等够 2 分钟才进 6b 是为了:
+- 大型 PR 让 Claude 看完需要时间
+- 如果你**还有第三方 agent 共存**(下面档位 B 的情况),给它们留点出声窗口
+
+### 档位 B:多 cloud agent 共存(Action + Codex / Copilot 等第三方 App)
+
+| 时间点 | 动作 |
+|---|---|
+| t = 0 | gh pr create 完成 + arm Monitor |
+| t < 5 min | **不进 6b**。即使 Action 已经 "no concerns" / "looks good",也必须等第三方 agent 出声 |
 | 5 min ≤ t < 15 min | 收到反馈 → 立刻进 6b;都没响应 → 继续等 |
 | t = 15 min | 有几条算几条进 6b;全部沉默 → 直接 step 7 |
 | 整个 gate ≤ 60 min | 超时直接 step 7(强制 cap) |
 
-**为什么是 5 分钟**:内置 review(如 claude-review GitHub Action)是 PR 一开就触发的(30–60s 出 stub),但第三方 GitHub App(Codex / Copilot 等)通过 webhook 触发,平均 3–5 分钟。如果你在 90 秒就因为内置 review 说 OK 而进 step 7,等于完全跳过其他 agent。
+**为什么是 5 分钟**:第三方 GitHub App 通过 webhook 触发,平均 3–5 分钟出第一条反馈。如果在 90 秒就因为 Action 说 OK 而进 step 7,等于完全跳过其他 agent。
+
+### 怎么判断走 A 还是 B
+
+```bash
+# 查仓库 .github/workflows/ 里有哪些 review agent
+ls .github/workflows/ | grep -E '(claude|codex|copilot|review)'
+
+# 查 PR 的 reviewers 字段历史范围(只 claude[bot] 单独出现 → A 档;还有其他 → B 档)
+gh pr view <N> --json reviews --jq '[.reviews[]?.author.login] | unique'
+```
+
+**默认按档位 A**(本 skill 的标准假设)。如果仓库实际是 B 档,本文档其余规则照样适用,只是时序窗口换成 5/15min。
 
 ## 1. 反馈优先级矩阵
 
@@ -97,13 +127,53 @@ gh pr view <N> --json files --jq '[.files[]?.path] | sort | join("\n")'
 
 确认实际 diff 范围,然后 PR 上 reply 一句"已确认 PR 实际改动仅涉及 X 文件,agent 提到的 Y 文件来自 base 分支 merge,不在本 PR scope 内",跳过。
 
+## 2.5 Action 自修 path(Claude Code Actions 独有)
+
+如果仓库装了 `claude.yml`(`@claude` 触发的交互 workflow),你有两条修反馈的路径:
+
+### 路径 A:本地修(经典 6c)
+
+```bash
+# 本地编辑代码 → commit → push,触发新一轮 CI 和 review
+git add <files>
+git commit -m "review: address <agent> on PR #<N> — ..."
+git push
+```
+
+### 路径 B:委托 Action 自己修
+
+在 PR 评论里贴 `@claude <指令>`,例:
+
+```
+@claude 把 src/foo.ts 第 47 行的 race condition 修了,加 SELECT FOR UPDATE
+```
+
+`claude.yml` workflow 触发,Action 在 runner 里 checkout、改文件、commit、push 到 PR 分支。30s–3min 后你会看到新 commit。
+
+### 怎么选
+
+| 场景 | 推荐路径 |
+|---|---|
+| 反馈很复杂、需要看上下文跨多文件、有项目级约束 | A(本地)——你比 Action 更懂全貌 |
+| 反馈很明确、单点修改、agent 已经指了具体行 | B(委托)——省时间 |
+| 涉及生产敏感文件(`.env.production` 等) | A,且按 [blockers.md #6](blockers.md) 必须人工 review |
+| review 反馈本身有歧义 / 你想拒绝 | 都不用,直接在 PR 上 reply 解释 |
+
+### 路径 B 的注意事项
+
+- Action commit 完会触发新一轮 `pull_request: synchronize`,Monitor 会在 `reviewers=` 字段看到新事件 → 回 6a 重审,**不要**跳过这一步
+- 如果 `claude.yml` 配的 `permissions: contents: read`(只读),Action 改不了代码,会留个评论说"我没权限"——回头改 YAML 加 `contents: write`
+- Action 跑挂(quota / 401 / timeout)时**不会**自己重试;你需要查 `gh run list -w claude.yml --limit 1` 找日志,要么本地修(回路径 A),要么修好 YAML / token 后重发 `@claude` 指令
+
 ## 3. 防死循环
 
 | 限制 | 阈值 | 触发后行为 |
 |---|---|---|
 | 单条建议被采纳次数 | ≤ 2 | 第二次后同 agent 还重复 → reply "已多次评估,决定保留现状",跳过 |
 | 整个 gate wall clock | ≤ 60 min | 超时直接 step 7 enable auto-merge |
-| 单轮 review 等待 | ≤ 15 min | 到点不管几个 agent 出声都进 6b |
+| 单轮 review 等待(档位 A,Action 主导) | ≤ 8 min | 到点不管几个 agent 出声都进 6b |
+| 单轮 review 等待(档位 B,多 agent 共存) | ≤ 15 min | 到点不管几个 agent 出声都进 6b |
+| `@claude` 委托修复后等 Action 跑完 | ≤ 5 min | 超过 5min 还没新 commit → 查 `gh run list -w claude.yml`,跑挂就走路径 A 本地修 |
 
 ## 4. 修反馈的 commit 模板
 
@@ -133,17 +203,19 @@ push 触发:
 
 - 所有出声的 agent 都 review-approved(`reviewDecision=APPROVED`)
 - 所有出声的 agent 评论都已 reply 处理过(采纳或解释跳过)
-- 15 分钟内全部沉默
+- 档位 A:8 分钟内全部沉默 / 档位 B:15 分钟内全部沉默
 - 60 分钟 wall clock cap
 
 满足条件 → 立刻 `gh pr merge --auto --merge <N>`,不停下问用户。
 
+⚠️ **档位 A(Action 主导)的特殊沉默情况**:如果 8min 到了 `reviewers=` 字段还是空,先 `gh run list -w claude-code-review.yml --limit 3` 确认 workflow 真跑过且 success。如果 workflow 完全没触发或失败,这是 [blockers.md #7](blockers.md) 的情况(Actions 没触发),停下来给用户。
+
 ## 7. 罕见但合法的"PR 太小被 agent 主动忽略"
 
-不少内置 review agent(如 claude-review)系统 prompt 里有类似规则:
+不少内置 review agent(如 claude-review、官方 `code-review` plugin)系统 prompt 里有类似规则:
 
 > 如果 PR 是小于 ~30 行的纯文档 / typo / changelog,直接说 "looks good, skipping detailed review"
 
-对应的 PR 类型:typo 修正、README 改一行、依赖小版本 bump。这种 PR 上 agent 集体沉默是**正常**的,不是失败模式。15 分钟到 → 直接 step 7。
+对应的 PR 类型:typo 修正、README 改一行、依赖小版本 bump。这种 PR 上 agent 集体沉默是**正常**的,不是失败模式。档位 A 到 8min / 档位 B 到 15min → 直接 step 7。
 
-不要因为 "agent 都没说话" 而恐慌或来回询问用户。
+不要因为 "agent 都没说话" 而恐慌或来回询问用户。**前提**:已用上面的 `gh run list` 确认 workflow 真跑过、不是配置问题。

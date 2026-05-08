@@ -85,6 +85,63 @@ agent 原话:<quote>
 你怎么处理?(接受 / 拒绝 / 拆 PR 走特殊流程)
 ```
 
+### 7. Claude Code Actions workflow 没触发 / 跑挂
+
+PR 开了 5 分钟后,**reviewers 字段一直为空**,且:
+
+```bash
+gh run list -w claude-code-review.yml --limit 3
+```
+
+显示 0 条 run,或所有 run 都是 `failure` / `cancelled`。
+
+可能原因:
+
+| 现象 | 原因 | 修复 |
+|---|---|---|
+| 无任何 run 记录 | workflow YAML 语法错 | `gh workflow view claude-code-review.yml` 看 invalid 提示 |
+| run 都是 `failure`,日志 401 | secret `CLAUDE_CODE_OAUTH_TOKEN` 不存在 / 过期 | `claude setup-token` 重生成 + `gh secret set CLAUDE_CODE_OAUTH_TOKEN` 覆盖 |
+| 无任何 run 记录,workflow 在 disabled 状态 | App 没装 / 没勾选当前 repo | <https://github.com/apps/claude> → Configure → 加上 repo |
+| run 跑出 `usage limit exceeded` | runner quota 用尽(免费每月 2000 min) | 等下个月或升 plan |
+| run 跑出 `rate_limit_exceeded` | Claude 订阅日 quota 用尽 | 等 5 小时重置,或换 API Key 路径 |
+
+→ 必须停:
+
+```
+⚠️ PR #<N> 的 Claude Code Actions 没正常工作
+
+当前状态:
+<gh run list 输出>
+
+推测原因:<上表对应那条>
+建议修复:<对应命令>
+
+我没法继续 babysit(没人 review),你来修一下再让我接管。
+```
+
+### 8. OAuth token 失效 / 订阅 quota 用尽
+
+Workflow 跑了但 step `Run Claude Code` 失败,日志含:
+
+- `401 Unauthorized` / `Authentication failed`
+- `rate_limit_exceeded` / `quota exceeded` / `usage limit reached`
+
+→ 必须停:
+
+```
+⚠️ PR #<N> Claude Code Action step 认证 / quota 失败
+
+run: <run-id> 日志:
+<关键错误行 quote>
+
+可能原因:
+- OAuth token 过期 → claude setup-token 重新生成 + gh secret set 覆盖
+- 订阅日 quota 用尽 → 等 5 小时重置(GitHub-actions 按 UTC 跨天)
+- 触发了 Anthropic 风控 → 间隔 10–30 分钟再试
+
+修好后,在 PR 评论里贴 `@claude resume` 让我接着之前的进度跑(或者本地修后 push,触发新一轮 review)。
+```
+
 ---
 
 ## 不允许停的场景(容易混淆但必须继续)
