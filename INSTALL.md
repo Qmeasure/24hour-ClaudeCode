@@ -2,6 +2,12 @@
 
 这个 skill 当前是一个独立目录(`worktree-pr-flow/`)。要让 Claude Code 自动加载并按 description 触发,需要软链或拷贝到 skills 目录。下面用 `<SKILL_DIR>` 表示当前 skill 目录的实际绝对路径(跑 `pwd` 拿到)。
 
+## 跑这个 skill 之前
+
+> ⚠️ **重要**:本 skill 假设目标仓库已部署 Claude Code Actions(secret + workflow YAML)。如果是新仓库还没配,**先按 [SETUP.md](SETUP.md) 走完首次配置**(10–15 分钟),否则跑到 step 6 会卡住等不到 review。
+>
+> 已配过的仓库(已有 `.github/workflows/claude*.yml` + `gh secret list` 含 `CLAUDE_CODE_OAUTH_TOKEN`)直接跑。
+
 ## 选项 A:软链(推荐,单点维护)
 
 ```bash

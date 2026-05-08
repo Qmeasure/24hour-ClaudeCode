@@ -86,7 +86,10 @@ failure 时给用户的消息:
 
 | 变化 | 动作 |
 |---|---|
-| 多了新名字(如从 `claude` 变 `claude,Codex`) | **回 step 6 多轮 gate**:调 `gh pr view <N> --json reviews` 看新 review 内容,按 [quality-gate.md](quality-gate.md) 评估 |
+| 多了新名字(如从 `claude[bot]` 变 `claude[bot],Codex`) | **回 step 6 多轮 gate**:调 `gh pr view <N> --json reviews` 看新 review 内容,按 [quality-gate.md](quality-gate.md) 评估 |
+| 出现 `claude[bot]` | Claude Code Action 已 review,正常评估流程 |
+| 用户在 PR 评论 `@claude 修 XXX` 后 reviewers 暂时不变 | Action 在 runner 里跑,**等 30s–3min**;30s 后查 `gh run list -w claude.yml --limit 1` 确认 workflow 在跑(参 [quality-gate.md §2.5](quality-gate.md)) |
+| `@claude` 委托后 5min 还没新 commit | Action 跑挂了:看 `gh run view <run-id> --log-failed`,常见 401(token)/ timeout / quota 用尽 → [blockers.md #8](blockers.md) |
 | 名字没变但有新 review event | 同上(agent 可能在第二次 review 推翻第一次结论) |
 | 没变 | 静默 |
 
@@ -98,6 +101,9 @@ gh pr view <N> --json reviews --jq '.reviews[-1]'
 
 # 特定 agent 的所有 review
 gh pr view <N> --json reviews --jq '.reviews[] | select(.author.login=="<agent-login>")'
+
+# Claude Code Action 这条 review
+gh pr view <N> --json reviews --jq '.reviews[] | select(.author.login=="claude[bot]")'
 ```
 
 ### 5. 时间维度
@@ -120,6 +126,21 @@ gh pr view <N> --json reviews --jq '.reviews[] | select(.author.login=="<agent-l
 - 检查 `autoMergeRequest`:`gh pr view <N> --json autoMergeRequest --jq '.autoMergeRequest.mergeMethod // "off"'`
 - 如果是 `off` → step 7 没执行成功,重跑 `gh pr merge --auto --merge <N>`
 - 如果是 `merge`(或 squash)→ 真在等 required check,继续静默
+
+⚠️ **档位 A(Action 主导)的额外沉默检查**:
+
+如果 PR 开 5 分钟以上 `reviewers=` 字段一直空(连 `claude[bot]` 都没出现),**workflow 没跑**:
+
+```bash
+# 看 review workflow 有没有触发过
+gh run list -w claude-code-review.yml --limit 5
+
+# 没看到任何 run → workflow 配置 / App / secret 出问题
+# 看到 run 但 status=failure → 看日志
+gh run view <run-id> --log-failed
+```
+
+**这是 [blockers.md #7](blockers.md) 的"Actions 没触发"场景**,停下来给用户(workflow 没跑就没人 review,继续 babysit 也没用)。
 
 ## "完成"消息模板
 

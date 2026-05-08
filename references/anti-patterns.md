@@ -143,3 +143,176 @@ PR 上 reply,**引用具体的项目规则**:
 push → 回 6a 等 Monitor 捕获 reviewers 字段变化 → 重评估 → 直到反馈静默 → 进 step 7。
 
 每个 PR 平均 2–3 轮 6a/6b/6c 是正常的。
+
+## H. Claude Code Actions 配置失误(仓库装了 Action 才会遇到)
+
+### H1. OAuth token 泄漏
+
+#### 反模式
+
+把 `claude_code_oauth_token` 的值贴在:
+- chat / 代码评论 / 调试输出
+- commit message 或代码注释里
+- `.env` 文件 commit 上去
+- log 里 `echo $CLAUDE_CODE_OAUTH_TOKEN`
+
+#### 后果
+
+Token 一泄漏,所有看到的人都能用你的 Claude Pro/Max 订阅 quota,直到 quota 烧完或你撤销。
+
+#### 正确
+
+```bash
+# 走 stdin 管道,token 不进 shell history、不进任何文件
+gh secret set CLAUDE_CODE_OAUTH_TOKEN -R <owner>/<repo>
+# 提示 "? Paste your secret" 时粘贴 → 回车
+
+# 或从临时文件读完立刻删:
+echo "<token>" > /tmp/.t && gh secret set CLAUDE_CODE_OAUTH_TOKEN -R <owner>/<repo> < /tmp/.t && rm /tmp/.t
+```
+
+如果 token 已经泄漏:`claude setup-token` 重新生成,旧 token 会失效。
+
+### H2. `permissions: read-only` 但期望 @claude 改代码
+
+#### 反模式
+
+`/install-github-app` 默认产物 `claude.yml` 的权限是:
+
+```yaml
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+```
+
+用户在 PR 评论 `@claude 修 XXX`,Action 跑了但发现自己没写权限,**silent fail**——只在 PR 留个评论"我没权限改文件",代码完全没动。
+
+#### 正确
+
+```yaml
+permissions:
+  contents: write       # ← 必须 write,Action 才能 commit
+  pull-requests: write
+  issues: write
+  actions: read         # 让它读 CI 日志
+  id-token: write
+```
+
+### H3. 撞 workflow 文件名
+
+#### 反模式
+
+本地手写了 `.github/workflows/claude.yml`,跑 `/install-github-app` 又自动生成一份(同名),git push 时 conflict。或者更隐蔽:`/install-github-app` 直接通过 GitHub API 推上去了,你本地不知道,后续 push 自己版本被 reject。
+
+#### 正确
+
+```bash
+# 先看远端有什么
+gh api repos/<owner>/<repo>/contents/.github/workflows --jq '.[].name'
+
+# 有冲突文件先 pull --rebase 再决定保留哪个
+git pull --rebase origin main
+```
+
+### H4. 没设 `concurrency`
+
+#### 反模式
+
+用户连续 push 5 次到同一 PR,5 次 workflow 各跑一遍,token 五倍消耗。
+
+#### 正确
+
+```yaml
+concurrency:
+  group: claude-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true     # 旧 run 取消,只跑最新的
+```
+
+### H5. 没设 `timeout-minutes`
+
+#### 反模式
+
+GitHub Actions job 默认 timeout 是 **6 小时**。Action 跑飞了(死循环、卡 LLM 调用、bun 装失败等)能烧 6 小时 token。
+
+#### 正确
+
+```yaml
+jobs:
+  review:
+    timeout-minutes: 10    # review job
+  claude:
+    timeout-minutes: 15    # @claude 修代码 job(可能多步)
+```
+
+### H6. `--max-turns` 默认 10 但任务复杂
+
+#### 反模式
+
+`@claude 重写整个 src/auth/` 这种大任务,默认 10 turns 不够,Claude 改到第 5 个文件就被掐断,**留下半成品 commit**:有的文件改了、有的没改、import 不一致。
+
+#### 正确
+
+按场景调:
+
+```yaml
+# review-only(只评论不改)
+claude_args: --max-turns 5
+
+# @claude 修小 bug
+claude_args: --max-turns 10
+
+# @claude 跨多文件重构
+claude_args: --max-turns 20
+```
+
+`--max-turns` 选择参考表见 [workflow-yaml.md §C](workflow-yaml.md#c-claude_args-cli-flags)。
+
+### H7. 触发器配重复
+
+#### 反模式
+
+```yaml
+# claude-code-review.yml
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+# claude.yml
+on:
+  pull_request:                 # ← 也接 pull_request
+    types: [opened, synchronize]
+  issue_comment: ...
+```
+
+每个 PR 跑两遍 review = token 双倍。
+
+#### 正确
+
+按职责分:
+- `claude-code-review.yml` 只接 `pull_request`(自动 review)
+- `claude.yml` 只接 comment 类事件(`issue_comment` / `pull_request_review_comment` / `pull_request_review` / `issues`)
+
+按 [SETUP.md §4](../SETUP.md) 的模板不会撞。
+
+### H8. 把 OAuth token 当 API Key 用
+
+#### 反模式
+
+```yaml
+anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}   # ← 字段错位
+```
+
+OAuth token 走的是订阅认证流(走 Anthropic 的 OAuth endpoint);API Key 走的是 console 计费流。Action 看 input 字段名决定走哪条;字段错位 → 401。
+
+#### 正确
+
+```yaml
+# 用订阅
+claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+# 或用 API Key
+anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+
+# 二选一,不要两个都填
+```
