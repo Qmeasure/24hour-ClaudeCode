@@ -1,127 +1,213 @@
-# worktree-pr-flow
+**English** | [中文](README.zh-CN.md)
 
-> A Claude Code Skill that drives a worktree-based feature → PR → multi-agent review → auto-merge → babysit-to-MERGED loop, with first-class Claude Code Actions integration.
+# 24hour-ClaudeCode
 
-把"在 worktree 里写代码 → 提 PR → 等 cloud agent review → 改反馈 → auto-merge → babysit 到 `state=MERGED`"这套 9 步流程编码成可稳定复现的 Skill。任何在 worktree 内开发并需要把 feature 合入项目 base 分支(dev/main/master 等)的任务都按这个走。
+**A magic helper that ships your code for you. You write the change; it does everything else.**
 
-## 这个 skill 解决什么问题
+You're using Claude Code in a project. You ask it to fix a bug or add a feature. Normally, after the code is written you still have to:
 
-LLM 默认习惯是"做完阶段性工作就停下来汇报"——但完整 PR 流程要求**一气从 step 1 跑到 `state=MERGED`**,中途任何"我做完 X 了,要继续吗?"都让用户必须手动 nudge。
+- Run tests
+- Make a commit with a good message
+- Push to GitHub
+- Open a Pull Request
+- Wait for the review bot to look at it
+- Respond to feedback (and probably do another round of fixes)
+- Click "merge" when everything's green
 
-这个 skill 把全流程编码成:
+This plugin does **all of that** for you, automatically. **You write code; it ships the PR.**
 
-1. **Pre-flight 5 项检查**(worktree / 分支 / 工作树 / issue 编号 / Actions 配置)
-2. **写代码 → 本地验证 → commit → push → 开 PR**(标准开发)
-3. **Quality gate**:多 agent review 评估(Reject / Major / Minor / Nit 矩阵 + 时序硬规则)
-4. **Auto-merge enable**(紧跟 review 静默,不停下问)
-5. **Babysit loop**(用 Monitor 跑 6 条铁律的状态机,一直到 `state=MERGED` 或 60min cap)
+---
 
-**Definition of Done = `state=MERGED`**——auto-merge enabled / CI 绿 / review approved 都不算。
+## How it feels in practice
 
-## 谁该用
+Here's what shipping one feature looks like:
 
-- 在 worktree 里开发 feature / fix 的 Claude Code 用户
-- 仓库装了 [Claude Code Actions](https://github.com/anthropics/claude-code-action)(本 skill 主要假设)
-- 用 [Superset](https://docs.superset.sh) 客户端管理多 worktree 的(可选,有专门集成)
+> **You:** "Add CSV export to the reports page."
+>
+> *(Claude edits 3 files. You say "looks good".)*
+>
+> **Claude:** "✅ I committed your changes, opened PR #142, and CI is running. I'll check back in a moment."
+>
+> *(Two minutes later)*
+>
+> **Claude:** "✅ PR #142 merged: github.com/your-org/your-repo/pull/142"
 
-## 快速开始
+If something goes wrong, the loop catches it:
 
-### 一键配置(推荐)
+> **Claude:** "The auto-review found a bug — the new `/export` endpoint forgot to handle empty datasets (line 48). Fixing now."
+>
+> *(Claude fixes it. CI re-runs. Passes.)*
+>
+> **Claude:** "✅ PR #142 merged."
+
+You never typed `git commit`, `gh pr create`, or clicked "merge". The plugin handled all of it.
+
+---
+
+## When to use this plugin
+
+✅ **Good fit:**
+- You're working on a real GitHub project
+- You want Claude Code to ship features end-to-end without you nudging it
+- You're OK letting an automated process commit and push your code (it asks before any push; nothing happens secretly)
+
+❌ **Not a good fit (for now):**
+- You're doing exploratory work and don't want auto-commits yet
+- Your project doesn't use GitHub
+- You're working on highly sensitive code (passwords, infrastructure config) — the plugin refuses to touch those by default, but you may want full manual control
+
+---
+
+## Quick start (about 10 minutes, only once per project)
+
+You only do this once for each project. After setup, the plugin works automatically forever.
+
+### Step 1 — Install the plugin
+
+In Claude Code, type:
+
+```
+/plugin marketplace add Qmeasure/24hour-ClaudeCode
+/plugin install 24hour-ClaudeCode@24hour-ClaudeCode-marketplace
+```
+
+> **What's a plugin?** Think of it as an "app" for Claude Code. Once installed, it adds new behavior to Claude. This one adds the auto-PR superpower.
+
+### Step 2 — Run the setup wizard
+
+```
+/24hour-ClaudeCode:setup
+```
+
+The wizard does the rest. It will:
+
+1. Check that the basic tools (`git`, `gh`, `claude`) are installed and signed in
+2. Open GitHub in your browser to install the Claude review bot on your repo
+3. Generate an API token from your Claude subscription and save it as a GitHub secret (this is what lets the auto-review bot run)
+4. Read your project to detect what test/lint commands you use
+5. Ask: "Which AI should review your PRs? Claude / OpenAI Codex / both?"
+6. Generate the right config files for your project type
+7. Show you the plan before pushing — you confirm before anything goes live
+
+The wizard explains every step in plain English. **Nothing happens without your OK.**
+
+### Step 3 — Start working
+
+Open a worktree for your task:
 
 ```bash
-# 1) 装 skill 到全局(symlink,改文件即生效)
-ln -s "$(pwd)" ~/.claude/skills/worktree-pr-flow
-
-# 2) 在你的目标 repo 一次性配 Claude Code Actions(交互 ~15 分钟)
-cd ~/code/your-repo
-bash ~/.claude/skills/worktree-pr-flow/scripts/configure-actions.sh
-
-# 3) (可选)Superset 用户:注入 .superset/config.json
-bash ~/.claude/skills/worktree-pr-flow/scripts/install-superset-config.sh
+git worktree add ../my-feature -b feat/my-feature
+cd ../my-feature
+claude
 ```
 
-完成后,在新 Claude Code 对话里说:
+Now ask Claude to do something. The plugin takes over from there.
+
+> **What's a worktree?** It's a way to have multiple "checkouts" of the same project at the same time. Each worktree is a separate folder with its own branch.
+>
+> The plugin **only activates inside worktrees**, so you can keep using Claude Code normally in your main folder without any of this firing.
+
+---
+
+## FAQ — common questions
+
+**Will it commit things I don't want committed?**
+No. It only commits files you actually changed in this session. Sensitive paths like `migrations/`, `.env.production`, `infra/`, and `**/secrets/**` are blocked by default — the plugin refuses to auto-commit those and asks you for explicit approval first.
+
+**What if the review keeps failing?**
+After 5 fix-and-retry rounds it stops automatically and tells you what's wrong. You take over from there.
+
+**What if I want to make a manual edit and not have it auto-committed?**
+Two options:
+- Run `/24hour-ClaudeCode:disable` to pause the plugin → make your manual edit → `/24hour-ClaudeCode:enable` when done.
+- Or do your edits in the main checkout (not a worktree). The plugin only activates inside worktrees.
+
+**Will it touch my main branch?**
+No. It refuses to push to `main`, `master`, `develop`, `staging`, etc. You have to be on a feature branch.
+
+**How do I see what it's doing right now?**
+Run `/24hour-ClaudeCode:status` — it shows the current PR, how many fix rounds happened, and any warnings.
+
+**The auto-review is too strict / too loose. Can I tune it?**
+Yes. Edit `.claude/24hour-ClaudeCode/review-prompt.md` in your project. That's a plain English file telling the review bot what to focus on. Changes apply to the next PR; no re-setup needed.
+
+**How do I uninstall it?**
+```
+/plugin uninstall 24hour-ClaudeCode
+```
+This removes the plugin. The workflow files in `.github/workflows/` and your API token in GitHub Secrets stay in place — delete those manually if you want a complete cleanup.
+
+---
+
+## Troubleshooting
+
+| Symptom | What to do |
+|---|---|
+| "It seems stuck" | Run `/24hour-ClaudeCode:status`. If something's stuck longer than 2 min, try `/24hour-ClaudeCode:clear-lock` |
+| "It can't push my code" | Check `gh auth status`. Re-authenticate if needed. |
+| "It said the loop hit a limit" | The plugin tried 5 times and couldn't make CI/review happy. Read its message and fix manually. |
+| "Reviews aren't happening" | Make sure GitHub's "Claude" app is installed on your repo and `CLAUDE_CODE_OAUTH_TOKEN` is set as a secret. Run `/24hour-ClaudeCode:setup` again. |
+| "I want to start fresh" | `/24hour-ClaudeCode:setup` is safe to re-run — it won't break existing config |
+
+---
+
+## Customization (optional)
+
+After setup, your project has these knob files:
 
 ```
-走 Path B 把这个 PR 提了
+your-project/
+├── .claude/24hour-ClaudeCode.config.json     ← main settings
+└── .claude/24hour-ClaudeCode/review-prompt.md ← what the review bot looks for
 ```
 
-或:
+The most common changes:
 
-```
-我在 worktree 内,开 PR 然后 babysit 到 merged
-```
+| What you want | How |
+|---|---|
+| Focus reviews on something specific (e.g., security only) | Edit `.claude/24hour-ClaudeCode/review-prompt.md` |
+| Allow more retry rounds before giving up | Change `repair.max_iterations` in the config file (default 5) |
+| Add a path that should NEVER be auto-committed | Add a glob to the `danger_paths` array in the config file |
+| Skip running tests before each commit (faster but riskier) | Set `checks.run_local_tests: false` in the config file |
 
-skill 会自动加载。
+---
 
-### 手动 / 详细配置
+## Slash commands
 
-→ [SETUP.md](SETUP.md) — 6 步零基础配置
-→ [INSTALL.md](INSTALL.md) — skill 自身的 3 种安装方式
+These are escape hatches — you don't normally need them.
 
-## 文件地图
+| Command | What it does |
+|---|---|
+| `/24hour-ClaudeCode:setup` | (Re)run the setup wizard |
+| `/24hour-ClaudeCode:status` | Show what's happening right now |
+| `/24hour-ClaudeCode:retry` | Force-restart the auto-PR loop after a hiccup |
+| `/24hour-ClaudeCode:disable` | Pause the plugin for this project |
+| `/24hour-ClaudeCode:enable` | Resume after pausing |
+| `/24hour-ClaudeCode:clear-lock` | Last resort: unstick a stuck loop |
 
-```
-worktree-pr-flow/
-├── README.md                           ← 你正在看这个
-├── SKILL.md                            ← 主入口:9 步流程 + DoD
-├── SETUP.md                            ← 零基础首次配置 Claude Code Actions
-├── INSTALL.md                          ← 把 skill 装到 ~/.claude/skills/
-├── CHECKLIST.md                        ← 每 step 一条的自审速查
-├── scripts/
-│   ├── configure-actions.sh            ← 一键交互式配置(SETUP.md 的 Quick path)
-│   ├── check-actions.sh                ← 非交互式校验(Superset setup 调用)
-│   └── install-superset-config.sh      ← 注入 .superset/config.json
-├── templates/
-│   ├── claude.yml                      ← @claude 交互 workflow 模板
-│   ├── claude-code-review.yml          ← 自动 PR review workflow 模板
-│   └── superset-config.json            ← Superset 配置模板
-└── references/
-    ├── workflow-yaml.md                ← 30+ Action 参数 + claude_args + GH Actions 字段全参考
-    ├── monitor-template.md             ← Monitor verbatim 模板 + 6 条铁律
-    ├── quality-gate.md                 ← 多 agent review 评估细则(档位 A / B 时序)
-    ├── decision-table.md               ← Babysit 事件处理矩阵
-    ├── anti-patterns.md                ← 失败模式 A–H 共 8 类
-    ├── blockers.md                     ← 唯一允许停下来问用户的 8 个场景
-    ├── superset-integration.md         ← Superset 多 worktree 接入
-    └── official-docs-cheatsheet.md     ← claude-code-action 官方 docs 关键 10 条
-```
+---
 
-## 设计哲学
+## What you need to have
 
-这个 skill **刻意**采用以下风格,违反"通用 Anthropic skill"惯例,因为它们解决具体踩坑:
+Before installing:
 
-| 选择 | 通用 skill 做法 | 本 skill 做法 | 原因 |
-|---|---|---|---|
-| description 语言 | 纯英文 | 中英混合,大量 trigger 关键词 | 中文用户的实际触发词("走 Path B")必须命中 |
-| Anti-pattern | 隐式(假设用户专业) | 显式(8 类 A–H,每条带真实事故) | LLM 容易复现历史失败模式,**显式列出**才有约束力 |
-| Verbatim 标记 | 较少 | 较多("铁律"、"verbatim",尤其是 Monitor 模板) | Monitor 6 铁律每条对应一次"沉默十几分钟用户以为合上了"事故 |
-| References 数量 | 很少(0–1 个) | 8 个 | 9 步流程 × 多种边界 = 单文件塞不下,且需要按主题查 |
-| 项目适配显式列表 | 不写 | 7 个变量表(包管理器 / base 分支 / 等) | 跨语言 / 跨包管理器复用必须显式参数化 |
+- A Claude Pro or Max subscription
+- A GitHub account
+- The GitHub CLI installed (`gh`) and signed in
+- Git version 2.20 or newer (for worktree support)
 
-如果你在改这个 skill,**先看 references/anti-patterns.md** 理解失败模式,再动笔。
+That's it. No Node.js, Python, or other languages required.
 
-## 配套使用
+---
 
-- **GitHub Actions**:[anthropics/claude-code-action](https://github.com/anthropics/claude-code-action)(本 skill 假设你的仓库装了这个)
-- **客户端**:[Superset](https://docs.superset.sh)(可选;每开新 workspace 自动校验配置)
-- **Skill 框架**:[Claude Code](https://code.claude.com)(本 skill 跑在 Claude Code 客户端里)
+## Curious how it actually works?
 
-## 开发 / 贡献
+The plugin uses Claude Code's **hook** system — small scripts that run automatically at specific moments (when a session starts, after Claude makes an edit, when Claude finishes a turn).
 
-本仓库自身用本 skill 描述的 9 步流程开发——meta dogfood:
+If you want to understand the architecture under the hood — which hooks fire when, how the loop iterates, how the runtime state machine works — see **[FLOW.md](FLOW.md)** ([中文版](FLOW.zh-CN.md)).
 
-- 任何改动开 PR 到 `main`
-- `.github/workflows/claude-code-review.yml` 自动以**专业 Skill Creator** 视角 review(prompt 在 workflow 文件里)
-- `@claude` 在 PR / issue / review comment 里也以 Skill Creator 视角响应
-- 9 个 Skill-Creator 维度自动评估(详见 workflow 文件 prompt):discoverability / anti-pattern explicitness / verbatim 安全 / cross-doc 一致 / reference 正交 / 项目适配 / DoD 可测量 / 触发词保留 / 内部链接
+---
 
 ## License
 
-(Per Anthropic terms of use; see official documentation.)
-
-## Links
-
-- [Anthropic Claude Code](https://code.claude.com)
-- [Claude Code Action repo](https://github.com/anthropics/claude-code-action)
-- [Superset docs](https://docs.superset.sh)
+MIT

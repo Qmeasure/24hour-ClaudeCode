@@ -1,9 +1,11 @@
 name: Claude Code Review
 
-# 本仓库是 worktree-pr-flow Claude Code Skill 自身。每个 PR 触发的 review 必须从
-# **专业 Skill Creator** 角度审查 skill 内容,而不是通用代码 review。
-# 评审维度详见下面 prompt;扩展时同步改 templates/claude-code-review.yml(给其他
-# 安装本 skill 的项目用,持续保持通用)。
+# Self-review workflow for the 24hour-ClaudeCode PLUGIN repo.
+# This is meta — the plugin reviewing its own changes. Review dimensions are
+# **plugin-architecture-specific**, not generic. When extending the plugin,
+# also update templates/claude-code-review.yml + scripts/render-workflows.sh
+# (which produce the workflow that ships to USER projects when they install
+# this plugin — that one is generic project-review).
 
 on:
   pull_request:
@@ -18,10 +20,10 @@ concurrency:
 jobs:
   claude-review:
     runs-on: ubuntu-latest
-    timeout-minutes: 12          # skill 内容多文件,留足审完时间;触发熔断防跑飞
+    timeout-minutes: 12
     permissions:
       contents: read
-      pull-requests: write       # 留 review 评论
+      pull-requests: write
       issues: read
       id-token: write
 
@@ -31,50 +33,122 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Run Claude Code Review (Skill Creator perspective)
+      - name: Run Claude Code Review (Plugin Maintainer perspective)
         id: claude-review
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          # 不用 /code-review 通用插件——这是个 Skill 仓库,review 维度需特化。
-          # 自定义 prompt:让 Claude 以 Senior Skill Creator 身份审。
+          # Custom prompt — this repo IS a Claude Code Plugin (24hour-ClaudeCode).
+          # Review must check plugin-architecture invariants, not generic code style.
           prompt: |
-            You are a senior Claude Code Skill author reviewing this PR. The repository is the
-            `worktree-pr-flow` Skill itself (a published skill that teaches a worktree → PR →
-            auto-merge → babysit-to-merged workflow with Claude Code Actions integration).
+            You are a senior Claude Code Plugin maintainer reviewing this PR.
+            The repository is the `24hour-ClaudeCode` Plugin — a published Claude Code plugin
+            that turns any git worktree into an autonomous PR loop (write code → SessionStart
+            bootstraps → PostToolUse marks dirty → Stop hook commits/pushes/opens PR/polls
+            CI/decides feedback → either auto-merges or returns `decision:block` to feed
+            rework feedback back to the agent). Architecture details: `FLOW.md`.
 
-            Your review is **not** generic code review. Evaluate against these Skill-Creator dimensions:
+            Your review is **not** generic code review. Evaluate against these
+            Plugin-Maintainer dimensions:
 
-            1. **Frontmatter discoverability** — does `SKILL.md` `description:` cover the user's likely
-               trigger phrases (Chinese + English)? Do new keywords get added when triggers shift?
-               Is `name:` kebab-case and unchanged?
-            2. **Anti-pattern explicitness** — when behavior changes, are real failure modes
-               documented (not just happy path)? Each anti-pattern in `references/anti-patterns.md`
-               must trace to a concrete failure scenario, not abstract advice.
-            3. **Verbatim safety markers** — sections labeled "verbatim / iron law / 铁律" must NOT be
-               casually edited. Each rule has a documented incident behind it. Flag any soft-touch
-               edit to `references/monitor-template.md` 6 iron laws as **blocker**.
-            4. **Cross-doc consistency** — counts and labels match across files:
-               - SKILL.md "8 中间状态" vs references/anti-patterns.md A–H (8 anti-patterns)
-               - blockers.md numbering 1–8 referenced consistently in SKILL.md / CHECKLIST.md
-               - Quality-gate.md timing windows (档位 A 2/8min, 档位 B 5/15min) match SKILL.md / CHECKLIST.md
-            5. **Reference orthogonality** — each `references/<topic>.md` covers one orthogonal concern:
-               quality-gate.md (review eval), monitor-template.md (status tracking), decision-table.md
-               (babysit decisions), anti-patterns.md (failure modes), blockers.md (allowed stops),
-               workflow-yaml.md (config reference), superset-integration.md (host integration),
-               official-docs-cheatsheet.md (upstream gotchas). Flag overlap or miscategorization.
-            6. **Project adaptation** — skills must list project-specific variables users replace
-               on first use. Verify the table at SKILL.md "项目适配" stays complete and accurate.
-            7. **DoD measurability** — success must be a measurable state (`state=MERGED`), not vague
-               ("works fine", "review complete"). Flag any softening of DoD.
-            8. **Trigger keyword preservation** — the `description:` field accumulates Chinese + English
-               trigger keywords over time. Removing or "translating" them breaks user discovery. Flag
-               any deletion or auto-translation of existing keywords as **major**.
-            9. **Internal link integrity** — every `[text](path/to/file.md)` and `[text](#anchor)` must
-               resolve. Catch path drift after file moves/renames.
-            10. **Tone alignment** — the skill's deliberate voice is "anti-pattern-explicit, real-failure-driven,
-                Chinese-friendly, English-fallback, imperative". Don't suggest neutralizing it to match
-                generic Anthropic skills (different design philosophy). When in doubt, preserve.
+            1. **Plugin manifest correctness** — `.claude-plugin/plugin.json` and
+               `.claude-plugin/marketplace.json` must reference the same plugin name
+               (`24hour-ClaudeCode`). Version bumps must use `scripts/bump-version.sh`
+               so both files stay in sync. Flag any drift as **major**.
+
+            2. **Hook architecture coherence** — three hooks have STRICT separation of duties:
+               - `SessionStart` (`hooks/bootstrap.sh`): env detection + content injection
+               - `PostToolUse` (`hooks/post-tool-use.sh`): light marker only (touches `<runtime>/dirty`)
+               - `Stop` (`hooks/stop.sh`): the heavy worker (mode-aware orchestrator)
+
+               Flag as **blocker** any change that:
+               - Moves heavy logic from Stop to PostToolUse (wrong granularity, wastes turns)
+               - Adds git operations to bootstrap or post-tool-use
+               - Changes the matcher from `startup|clear|compact` for SessionStart (would lose `/clear`/auto-compact resilience)
+
+            3. **State machine integrity** — `state.json.mode` ∈
+               {`idle` | `waiting_for_checks` | `ready_for_rework` | `merged`}.
+               Transitions in `hooks/stop.sh` must be consistent:
+               - idle/ready_for_rework + diff → waiting_for_checks (push)
+               - waiting_for_checks + feedback_good → merged (auto-merge)
+               - waiting_for_checks + rework_required → ready_for_rework (decision:block)
+               - merged → idle (cleanup pass)
+
+               Flag any new mode that isn't documented in FLOW.md, or any case branch that
+               leaks into a wrong mode.
+
+            4. **decision:block contract** — the rework loop depends on `stop.sh` returning
+               `{"decision":"block","reason":"..."}` JSON to stdout (NOT exit code 2). Any
+               change to the emit_block helper or its callers must preserve this contract.
+               Reference: official Claude Code hooks spec.
+
+            5. **Cross-script consistency** — tokens used between scripts must agree:
+               - `decide-feedback.sh` returns: `feedback_good | rework_required | inconclusive | stop:max_iterations`
+               - `stop.sh` case-matches all four explicitly. Flag missing cases.
+               - `check-stop-conditions.sh` returns: `continue | stop:protected_branch | stop:gh_auth_lost | stop:diff_too_large | stop:repeated_failure`
+               - `stop.sh` handles all `stop:*` tokens. Flag drift.
+
+            6. **Anti-pattern explicitness** — when behavior changes, the failure mode must
+               be documented in `references/anti-patterns.md` (categories A–H). Each
+               anti-pattern traces to a real failure scenario. Flag soft-touch additions
+               that don't cite the failure mode they prevent.
+
+            7. **Verbatim safety markers** — sections labeled `verbatim` / `iron law` /
+               `Iron Law` / `<EXTREMELY-IMPORTANT>` MUST NOT be casually rewritten:
+               - `references/monitor-template.md`'s 6 ironclad rules
+               - `skills/using-24hour-ClaudeCode/SKILL.md` Iron Law
+               - Bootstrap hook's `<EXTREMELY-IMPORTANT>` framing
+               Flag any soft-touch edit to these as **blocker**.
+
+            8. **Sub-skill orthogonality** — 8 skills under `skills/`, each owns ONE concern:
+               using-24hour-ClaudeCode (bootstrap meta), github-actions-onboarding,
+               ci-feedback-analysis, review-feedback-analysis, rework-implementation,
+               verification-before-push, babysit-pr (manual ref only), failure-escalation.
+               Flag content overlap or skill-name drift.
+
+            9. **Reference orthogonality** — each `references/<topic>.md` covers one concern:
+               monitor-template / quality-gate / decision-table / anti-patterns / blockers /
+               workflow-yaml / superset-integration / official-docs-cheatsheet. Flag overlap.
+
+            10. **Defensive state management** — atomic writes (`tmp + mv`), cooperative
+                locks (mkdir + holder file), runtime files in auto-gitignored
+                `<runtime>/` (never leaks to git diff). Verify any new state file follows
+                this. Specifically: `runtime-state.sh`, `runtime-lock.sh` are the ONLY
+                entry points for state mutations — flag direct file writes elsewhere.
+
+            11. **Stale-lock detection** — `runtime-lock.sh acquire` must clear orphaned
+                locks (PID dead AND >30 min old) before mkdir. Removing this would deadlock
+                the runtime after any SIGKILL. Flag as **blocker**.
+
+            12. **Onboarding flow correctness** — `scripts/configure-actions.sh` orders:
+                gh auth → repo identify → App install + verify (poll 6×60s) → provider
+                choice (claude/codex/both) → conditional Claude OAuth → render YAMLs →
+                push → conditional OPENAI_API_KEY (Codex) → health check → optional
+                Superset. Reordering skips can break Codex-only flow. Flag drift.
+
+            13. **Bilingual triggers** — `.claude-plugin/plugin.json` `description` field
+                AND `skills/using-24hour-ClaudeCode/SKILL.md` `description` accumulate
+                Chinese + English trigger keywords. Removing or auto-translating them
+                breaks user discovery. Flag deletion of existing keywords as **major**.
+
+            14. **DoD measurability** — success state is PR `state=MERGED`. Not "auto-merge
+                enabled". Not "CI green". Flag any softening of the DoD anywhere
+                (`SKILL.md` / `README.md` / sub-skills / FLOW.md).
+
+            15. **Internal link integrity** — `[text](path/to/file.md)` and `[text](#anchor)`
+                in `SKILL.md` / `README.md` / `FLOW.md` / `CLAUDE.md` / sub-skills /
+                references must resolve. Catch path drift after file moves.
+
+            16. **Workflow YAML drift** — when `templates/claude-code-review.yml` changes
+                (the version SHIPPED to user projects), confirm `.github/workflows/claude-code-review.yml`
+                (this repo's self-review) still uses the **plugin-maintainer** dimensions
+                above, NOT the generic project-review dimensions. They diverge by design.
+
+            17. **Tone alignment** — the plugin's deliberate voice in user-facing docs is
+                "approachable, plain-language, beginner-friendly with FAQ + scenarios"
+                (README, FLOW, top-level docs). Internal docs (CLAUDE.md, references,
+                sub-skills) are "anti-pattern-explicit, real-failure-driven, imperative".
+                Don't blur the two. Don't auto-neutralize Chinese-friendly phrasings.
 
             Format your output:
             - **Blocking issues** (must fix before merge): ≤ 3 items, file:line + reason + fix
@@ -82,10 +156,10 @@ jobs:
             - **Minor / Nit**: skip unless cross-doc inconsistency or broken link
             - **What this PR does well**: 1–2 sentences, optional
 
-            If the PR has no issues across all 10 dimensions, post a single approval review with
-            "Looks good — checked all 10 Skill-Creator dimensions, no blocking issues." Do not
-            invent issues to look thorough.
+            If the PR has no issues across all 17 dimensions, post a single approval review:
+            "Looks good — checked all 17 plugin-maintainer dimensions, no blocking issues."
+            Do not invent issues to look thorough.
           claude_args: |
             --max-turns 6
             --model claude-sonnet-4-6
-          use_sticky_comment: true   # 同一 PR 多次 review 更新同一条
+          use_sticky_comment: true
