@@ -150,14 +150,38 @@ jobs:
                 sub-skills) are "anti-pattern-explicit, real-failure-driven, imperative".
                 Don't blur the two. Don't auto-neutralize Chinese-friendly phrasings.
 
+            18. **Workflow-file change discipline** — when a PR modifies
+                `.github/workflows/*.yml`, those changes are subject to GitHub's
+                workflow-validation 401 (the App refuses to auth on PR branches whose
+                workflow files differ from default). The plugin handles this with the
+                auto-split flow:
+                - `scripts/split-workflow-pr.sh` peels workflow changes off into a
+                  preflight PR with `gh pr merge --auto --squash` enabled
+                - `hooks/stop.sh` Case A 1a–1c dispatches into it
+                - `hooks/stop.sh` Case E (`mode=waiting_for_preflight_merge`)
+                  polls + rebases on merge
+                - Override knob: `repair.allow_workflow_in_pr` (default false)
+                - State machine has 5 modes including `waiting_for_preflight_merge`
+
+                Flag as **blocker**:
+                - Any change that bundles workflow + code in a non-preflight PR
+                  without setting `allow_workflow_in_pr=true` AND documenting why
+                - Any change to `split-workflow-pr.sh` that drops the
+                  committed-workflow-history refusal (out-of-scope for v1)
+                - Any change to `stop.sh` that removes the workflow-bucket check
+                  before the danger_paths check (ordering matters — preflight first)
+                - Removing the branch-protection caveat from
+                  `using-24hour-ClaudeCode/SKILL.md` or `CLAUDE.md`
+                  (no-required-check-on-claude-review constraint)
+
             Format your output:
             - **Blocking issues** (must fix before merge): ≤ 3 items, file:line + reason + fix
             - **Major suggestions** (worth discussing): ≤ 5 items
             - **Minor / Nit**: skip unless cross-doc inconsistency or broken link
             - **What this PR does well**: 1–2 sentences, optional
 
-            If the PR has no issues across all 17 dimensions, post a single approval review:
-            "Looks good — checked all 17 plugin-maintainer dimensions, no blocking issues."
+            If the PR has no issues across all 18 dimensions, post a single approval review:
+            "Looks good — checked all 18 plugin-maintainer dimensions, no blocking issues."
             Do not invent issues to look thorough.
           claude_args: |
             --max-turns 6

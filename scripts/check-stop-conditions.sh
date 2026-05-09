@@ -2,15 +2,17 @@
 # check-stop-conditions.sh — Read runtime state + config + feedback, decide stop/continue.
 #
 # Output: a single token on stdout, exit code matching:
-#   continue                   exit 0
-#   stop:max_iterations        exit 10
-#   stop:repeated_failure      exit 11
-#   stop:protected_branch      exit 12
-#   stop:gh_auth_lost          exit 13
-#   stop:push_rejected         exit 14
-#   stop:user_judgement        exit 15
-#   stop:diff_too_large        exit 16
-#   stop:danger_path           exit 17
+#   continue                          exit 0
+#   stop:max_iterations               exit 10
+#   stop:repeated_failure             exit 11
+#   stop:protected_branch             exit 12
+#   stop:gh_auth_lost                 exit 13
+#   stop:push_rejected                exit 14
+#   stop:user_judgement               exit 15
+#   stop:diff_too_large               exit 16
+#   stop:danger_path                  exit 17
+#   stop:preflight_closed             exit 18  (raised by stop.sh, not here — reserved)
+#   stop:committed_workflow_changes   exit 19  (raised by stop.sh, not here — reserved)
 #
 # The babysit/failure-escalation skill reads stdout to decide messaging.
 #

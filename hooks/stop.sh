@@ -12,6 +12,8 @@
 #
 # Mode-aware. state.json's `mode` field drives the dispatch:
 #   - idle: no PR, no in-flight work. If diff non-empty → enter pre-PR commit/push flow.
+#   - waiting_for_preflight_merge: a workflow-only "preflight" PR was auto-split
+#     and is in flight. Poll its state; on merged, rebase + fall through to idle.
 #   - waiting_for_checks: PR exists, just pushed → poll/wait for CI, decide.
 #   - ready_for_rework: previous round flagged rework. If diff non-empty → enter pre-PR
 #     flow with iteration++ semantics.
@@ -146,6 +148,89 @@ if [[ "$mode" == "merged" ]]; then
   state_set pr_number null
   record_event "cleanup" "post-merge"
   exit 0
+fi
+
+# ---- waiting_for_preflight_merge: workflow-only PR is in flight ----
+if [[ "$mode" == "waiting_for_preflight_merge" ]]; then
+  preflight_pr=$(state_get preflight_pr)
+  if [[ -z "$preflight_pr" || "$preflight_pr" == "null" ]]; then
+    # State drift: recover to idle.
+    state_set mode "idle"
+    record_event "recovered" "waiting_for_preflight_merge without preflight_pr; reset to idle"
+    exit 0
+  fi
+
+  # Query the preflight PR's state.
+  pr_state=$(gh pr view "$preflight_pr" --json state --jq '.state' 2>/dev/null || echo "")
+
+  case "$pr_state" in
+    MERGED)
+      # Rebase the original branch onto the new base (which now contains the
+      # workflow file changes) so the next push has a clean diff.
+      # --autostash so the user's pending non-workflow edits in the working
+      # tree don't block the rebase.
+      base_branch=$(gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null || echo "main")
+      git fetch origin "$base_branch" >/dev/null 2>&1 || true
+
+      if git rebase --autostash "origin/$base_branch" >/dev/null 2>&1; then
+        state_set mode "idle"
+        state_set preflight_pr null
+        record_event "preflight_merged" "pr=$preflight_pr rebased onto origin/$base_branch"
+        # Fall through to Case A so any remaining (non-workflow) edits flow through
+        # the normal commit → push → ensure-pr → wait pipeline immediately.
+        mode="idle"
+      else
+        # Rebase conflict — abort and ask user to resolve.
+        git rebase --abort >/dev/null 2>&1 || true
+        record_event "preflight_rebase_conflict" "pr=$preflight_pr"
+        msg=$(printf '%s\n' \
+          "<24hour-ClaudeCode>" \
+          "Preflight PR #$preflight_pr merged, but rebase onto origin/$base_branch conflicted." \
+          "" \
+          "Resolve manually:" \
+          "  git fetch origin $base_branch" \
+          "  git rebase origin/$base_branch" \
+          "  # resolve conflicts, git rebase --continue" \
+          "" \
+          "Then end your turn — the next stop will continue the auto-PR loop.")
+        # Reset state so the user's resolution is welcomed back into idle.
+        state_set mode "idle"
+        state_set preflight_pr null
+        emit_info "$msg"
+      fi
+      ;;
+
+    OPEN)
+      record_event "preflight_open" "pr=$preflight_pr (waiting for auto-merge)"
+      emit_info "<24hour-ClaudeCode> Preflight workflow PR #$preflight_pr is still open (auto-merge enabled — waiting for required checks). The auto-PR loop will resume once it merges."
+      ;;
+
+    CLOSED|"")
+      # CLOSED-not-merged or gh query failed.
+      record_event "stop:preflight_closed" "pr=$preflight_pr state=${pr_state:-unknown}"
+      state_set mode "idle"
+      state_set preflight_pr null
+      msg=$(printf '%s\n' \
+        "<24hour-ClaudeCode>" \
+        "⛔ STOP condition: stop:preflight_closed" \
+        "" \
+        "Preflight PR #$preflight_pr was closed without merging." \
+        "Workflow file changes need to land on the default branch before the main branch's auto-review can run." \
+        "" \
+        "Options:" \
+        "  1. Reopen and merge PR #$preflight_pr." \
+        "  2. Set repair.allow_workflow_in_pr=true in .claude/24hour-ClaudeCode.config.json to bundle workflow + code (auto-review will fail; manual review required)." \
+        "  3. Revert the workflow changes locally so the loop continues without them." \
+        "" \
+        "Invoke failure-escalation skill for the user-facing message.")
+      emit_info "$msg"
+      ;;
+
+    *)
+      record_event "preflight_unknown_state" "pr=$preflight_pr state=$pr_state"
+      emit_info "<24hour-ClaudeCode> Preflight PR #$preflight_pr is in an unexpected state ($pr_state). Will retry on next stop."
+      ;;
+  esac
 fi
 
 # ---- waiting_for_checks: poll/decide ----
@@ -301,6 +386,77 @@ if [[ "$mode" == "idle" || "$mode" == "ready_for_rework" ]]; then
     record_event "skipped" "detect-changes saw no real diff"
     rm -f "$RUNTIME_DIR/dirty" 2>/dev/null
     exit 0
+  fi
+
+  # ---- Workflow-file detection: auto-split if needed ----
+  # GitHub refuses (HTTP 401) to authenticate the auto-review when a PR's
+  # .github/workflows/*.yml differs from the default branch. To keep the loop
+  # working, peel workflow changes off into a separate "preflight" PR that
+  # auto-merges first; the main branch's PR then has a clean diff.
+  workflow_count=$(echo "$changes_json" | jq -r '.buckets.workflow | length')
+  allow_in_pr="false"
+  if [[ -f "$CONFIG_FILE" ]]; then
+    allow_in_pr=$(jq -r '.repair.allow_workflow_in_pr // false' "$CONFIG_FILE")
+  fi
+
+  if (( workflow_count > 0 )) && [[ "$allow_in_pr" != "true" ]]; then
+    # Refuse if any workflow file already in committed (un-pushed) history.
+    base_branch=$(gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null || echo "main")
+    git fetch origin "$base_branch" >/dev/null 2>&1 || true
+    committed_workflows=$(git log "origin/$base_branch..HEAD" --name-only --pretty=format: 2>/dev/null \
+                         | grep -E '^\.github/workflows/.+\.ya?ml$' | sort -u || true)
+    if [[ -n "$committed_workflows" ]]; then
+      record_event "stop:committed_workflow_changes" "files=$(echo "$committed_workflows" | tr '\n' ' ')"
+      hit=$(echo "$workflow_count" | head)
+      msg=$(printf '%s\n' \
+        "Your branch has workflow file changes in committed (un-pushed) history:" \
+        "$(echo "$committed_workflows" | sed 's/^/  - /')" \
+        "" \
+        "GitHub's workflow-validation security policy will refuse the auto-review (HTTP 401) on a PR that mixes workflow + code commits." \
+        "" \
+        "Resolve manually:" \
+        "  git reset HEAD~ -- .github/workflows/    # un-stage workflow files from the last commit" \
+        "  git commit --amend --no-edit              # rewrite the commit without them" \
+        "" \
+        "The workflow files will then be in the working tree only — re-trigger the stop hook and the plugin will auto-split them into a preflight PR." \
+        "" \
+        "Override (NOT recommended): set repair.allow_workflow_in_pr=true in .claude/24hour-ClaudeCode.config.json to skip the split.")
+      emit_block "$msg"
+    fi
+
+    # Pass the workflow file list explicitly to the splitter for determinism.
+    workflow_list=$(echo "$changes_json" | jq -r '.buckets.workflow[]')
+    preflight_num=$(echo "$workflow_list" | bash "$SCRIPTS/split-workflow-pr.sh" 2>/tmp/split-workflow-err.$$)
+    split_exit=$?
+    err_log=$(cat /tmp/split-workflow-err.$$ 2>/dev/null || echo "")
+    rm -f /tmp/split-workflow-err.$$ 2>/dev/null
+
+    if (( split_exit != 0 )) || [[ -z "$preflight_num" ]]; then
+      record_event "failed:split_workflow" "exit=$split_exit detail=${err_log:0:200}"
+      msg=$(printf '%s\n' \
+        "Auto-split of workflow file changes into a preflight PR failed." \
+        "" \
+        "Detail:" \
+        "$err_log" \
+        "" \
+        "Either fix the underlying issue (gh auth, branch state, network) or set repair.allow_workflow_in_pr=true in .claude/24hour-ClaudeCode.config.json to bundle workflow + code in a single PR (auto-review will fail; manual review required).")
+      emit_block "$msg"
+    fi
+
+    state_set mode "waiting_for_preflight_merge"
+    state_set preflight_pr "$preflight_num"
+    rm -f "$RUNTIME_DIR/dirty" 2>/dev/null
+    record_event "preflight_opened" "pr=$preflight_num"
+    msg=$(printf '%s\n' \
+      "<24hour-ClaudeCode>" \
+      "📦 Workflow file changes were auto-split into preflight PR #$preflight_num." \
+      "" \
+      "Why: GitHub refuses to auth the auto-review (HTTP 401) when a PR modifies .github/workflows/*.yml. Splitting them off lets the main branch's PR have a clean diff." \
+      "" \
+      "Auto-merge is enabled on the preflight PR; the main loop will resume once it merges." \
+      "" \
+      "Your remaining (non-workflow) edits stay in the working tree and will be committed on the next stop after the preflight merges.")
+    emit_info "$msg"
   fi
 
   danger_count=$(echo "$changes_json" | jq -r '.danger_hit | length')
