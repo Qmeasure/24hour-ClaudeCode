@@ -1,174 +1,162 @@
-# 唯一允许停下来问用户的场景
+# Blockers — the only authorized reasons to stop and ask
 
-> Path B 的设计是中途**不停**。但有少数真 blocker 必须停下来——下面列出**全部允许停的情况**,不在列表里的都不允许停。
+This skill's design is "don't stop mid-flow". The list below is the **complete** set of authorized stops. Anything not on this list, you continue.
 
-## 允许停的 6 种场景
+## The 8 authorized blockers
 
-### 1. Pre-flight 检查 #4:缺少关联 issue 编号
-
-PR body 必须含 `Closes #<N>`(或项目管理工具对应 ID)。如果用户启动任务时没给编号,问一次:
+### 1. Pre-flight #1 — not in a worktree
 
 ```
-这个 PR 关联哪个 issue 编号?需要写进 PR body 的 Closes 句子让 issue 自动关闭(或者明确说 "无关联 issue" 我就不写)。
+I only drive worktrees, not main checkouts. Create one with:
+  git worktree add ../my-feature
+…then re-enter Claude Code from inside that path.
 ```
 
-得到答复继续。
+### 2. Pre-flight #2 — on a protected branch
 
-### 2. Local verification 失败但需要决策
-
-跑 typecheck / lint / test 出现的失败如果是:
-
-- **明显代码 bug** → 自己修,不停
-- **测试发现产品级问题**(功能本来就不对,不只是新代码 bug)→ **停下来**:
+If `git branch --show-current` returns `main` / `master` / `develop` / `dev` / `staging` / `production` / `release` / `prod`:
 
 ```
-跑测试发现 <test name> 失败,看起来不是新代码问题——
-<具体观察:旧测试也会挂 / fixture 数据已过期 / 业务逻辑本身错>
-我建议 <plan>,但这影响范围超过本 PR scope,需要你确认。
+You're on `<branch>`, which I treat as protected. I won't push there.
+Switch to a feature branch (git switch -c feat/your-thing) and re-run.
 ```
 
-### 3. Monitor 工具不可用
+### 3. Scope unclear after one ask
+
+If after Step 3's single scope question the user gives an ambiguous answer ("um, fix the bug?"):
 
 ```
-我没有 Monitor / ScheduleWakeup 工具,无法持续 babysit PR #<N>。
-- 可选 A:你保持 always-on session 接管 babysit
-- 可选 B:你手动盯 PR 页面,CI 过了 + review 静默后我帮你重新 enable auto-merge
+I need a one-line description of the change so I can write the commit message
+and PR body. Examples:
+  "fix the OAuth refresh race in auth/handler.ts"
+  "add CSV export to /reports page"
+  "rename `User.name` → `User.displayName` across the API"
+What are we shipping?
 ```
 
-### 4. DIRTY 冲突且不在白名单
+If the second answer is still unclear, escalate (this case is rare).
 
-冲突白名单(可直接处理):
-- 全是新增文件
-- 全是 lockfile(`pnpm-lock.yaml` / `package-lock.json` / `yarn.lock` / `Cargo.lock` / `poetry.lock` 等)→ 重跑安装命令重新生成
+### 4. DIRTY conflicts not on the safe-list
 
-业务代码冲突 → 停:
+Conflict safe-list (resolve directly without asking):
+- All conflicts are added-new-files (no overlap with base)
+- All conflicts are lockfiles (`pnpm-lock.yaml` / `package-lock.json` / `yarn.lock` / `Cargo.lock` / `poetry.lock` / `go.sum`) — re-run install to regenerate
 
-```
-PR #<N> DIRTY 冲突
-冲突文件:
-- src/foo.ts
-- src/bar.tsx
-我准备 git fetch origin <BASE_BRANCH> && git merge origin/<BASE_BRANCH>,需要手动解决业务冲突。是否继续?
-```
-
-### 5. CI 失败需要诊断方向
-
-CI failure 多数是真 bug,但偶尔是:
-- 第三方依赖临时挂掉(包仓库 / 后端服务)
-- runner 资源问题
-- flaky test(应该修而不是 retry)
-
-如果失败现象不像本 PR 引起 → 停:
+Anything else (real logic conflicts) → stop:
 
 ```
-PR #<N> CI 失败:<check name>
-log 显示 <现象>,看起来不是本 PR 引起。可能原因:
-- <推测 1>
-- <推测 2>
-我建议 <plan>,需要你确认方向。
+PR #<N> is DIRTY. Conflicts:
+  - src/foo.ts
+  - src/bar.tsx
+These look like overlapping logic changes — I'll need your call. Should I:
+  a) git fetch && git merge origin/<BASE>, then I attempt the merge?
+  b) leave it for you to resolve manually?
 ```
 
-### 6. review agent 反馈触及生产敏感区
+### 5. Required CI check failed
 
-review agent 评论让你改下面这类**生产敏感文件 / 操作**时,**必须停**(不依赖 review agent 的判断,以你项目根的 CLAUDE.md 红线列表为准。常见红线举例):
-
-- 生产环境配置(`.env.production` 等)、第三方平台 secrets
-- 生产数据库迁移命令(直接 push schema 类操作)
-- 签名密钥、证书、credential 文件
-- CI/CD 凭证、deploy key
-
-→ 必须停:
+CI failures may be real bugs, or external (third-party API down, runner OOM, flaky test). If the failure looks unrelated to your changes:
 
 ```
-review agent 建议改 <生产敏感文件>,按项目 CLAUDE.md 红线必须人工 review。
-agent 原话:<quote>
-你怎么处理?(接受 / 拒绝 / 拆 PR 走特殊流程)
+PR #<N> failed: <check name>
+Log shows: <one-line summary>
+This doesn't look like our code — possibly:
+  - <hypothesis 1>
+  - <hypothesis 2>
+Should I retry the check, or do you want to investigate?
 ```
 
-### 7. Claude Code Actions workflow 没触发 / 跑挂
+If the failure is clearly your bug, fix it without asking.
 
-PR 开了 5 分钟后,**reviewers 字段一直为空**,且:
+### 6. Reviewer asks you to edit a sensitive path
+
+A review comment requesting a change to a path on `--disallowed-tools` (migrations, infra, .env.production, secrets, deploy keys, etc.). The disallow list is auto-built from `scripts/detect-project.sh`'s `DANGER_PATHS`.
+
+```
+Reviewer suggested editing <sensitive-path>, which is on this repo's
+sensitive-paths list. By project policy, I won't auto-fix there.
+
+Reviewer's suggestion:
+  <quote>
+
+How should I handle it?
+  - Approve: tell me explicitly to make the edit
+  - Reject:  I'll reply on the PR explaining why we keep it as-is
+  - Defer:   leave the comment unaddressed; you handle it later
+```
+
+### 7. The Action workflow didn't run (or failed)
+
+After PR open, if 5 minutes elapse and `reviewers` is still empty AND:
 
 ```bash
-gh run list -w claude-code-review.yml --limit 3
+gh run list --workflow claude-code-review.yml --limit 3
 ```
 
-显示 0 条 run,或所有 run 都是 `failure` / `cancelled`。
+shows 0 runs, or all are `failure` / `cancelled` → stop.
 
-可能原因:
+Likely causes:
 
-| 现象 | 原因 | 修复 |
+| Symptom | Cause | Fix |
 |---|---|---|
-| 无任何 run 记录 | workflow YAML 语法错 | `gh workflow view claude-code-review.yml` 看 invalid 提示 |
-| run 都是 `failure`,日志 401 | secret `CLAUDE_CODE_OAUTH_TOKEN` 不存在 / 过期 | `claude setup-token` 重生成 + `gh secret set CLAUDE_CODE_OAUTH_TOKEN` 覆盖 |
-| 无任何 run 记录,workflow 在 disabled 状态 | App 没装 / 没勾选当前 repo | <https://github.com/apps/claude> → Configure → 加上 repo |
-| run 跑出 `usage limit exceeded` | runner quota 用尽(免费每月 2000 min) | 等下个月或升 plan |
-| run 跑出 `rate_limit_exceeded` | Claude 订阅日 quota 用尽 | 等 5 小时重置,或换 API Key 路径 |
-
-→ 必须停:
+| No runs at all | YAML syntax error | `gh workflow view claude-code-review.yml` shows the parse error |
+| Runs `failure` with 401 in logs | `CLAUDE_CODE_OAUTH_TOKEN` missing or expired | `claude setup-token` then `gh secret set` to overwrite |
+| No runs, workflow `disabled` | App not installed on repo | https://github.com/apps/claude → Configure → add repo |
+| Runs hit `usage limit exceeded` | Free runner quota (2000min/month) gone | Wait until next month or upgrade |
+| Runs hit `rate_limit_exceeded` | Claude subscription daily quota gone | Wait 5 hours, or switch to API key auth |
 
 ```
-⚠️ PR #<N> 的 Claude Code Actions 没正常工作
+⚠️ Claude Code Action isn't working on PR #<N>.
+Current state: <gh run list output>
+Likely cause: <row from table>
+Suggested fix: <one command>
 
-当前状态:
-<gh run list 输出>
-
-推测原因:<上表对应那条>
-建议修复:<对应命令>
-
-我没法继续 babysit(没人 review),你来修一下再让我接管。
+I can't continue babysitting (nothing to react to). Fix and I'll resume.
 ```
 
-### 8. OAuth token 失效 / 订阅 quota 用尽
+### 8. 60-minute wall-clock cap reached
 
-Workflow 跑了但 step `Run Claude Code` 失败,日志含:
-
-- `401 Unauthorized` / `Authentication failed`
-- `rate_limit_exceeded` / `quota exceeded` / `usage limit reached`
-
-→ 必须停:
+If 60 minutes have passed since PR open and `state` is still `OPEN`:
 
 ```
-⚠️ PR #<N> Claude Code Action step 认证 / quota 失败
+⚠️ Hit the 60-minute cap on PR #<N>.
+Current state: <state, mergeStateStatus, reviewers, checks summary>
+History:
+  <bullet list of every Monitor event so far>
 
-run: <run-id> 日志:
-<关键错误行 quote>
-
-可能原因:
-- OAuth token 过期 → claude setup-token 重新生成 + gh secret set 覆盖
-- 订阅日 quota 用尽 → 等 5 小时重置(GitHub-actions 按 UTC 跨天)
-- 触发了 Anthropic 风控 → 间隔 10–30 分钟再试
-
-修好后,在 PR 评论里贴 `@claude resume` 让我接着之前的进度跑(或者本地修后 push,触发新一轮 review)。
+Options:
+  - Extend: I'll keep going if you say so
+  - Hand off: take it from here
+  - Abandon: gh pr close <N>
 ```
 
 ---
 
-## 不允许停的场景(容易混淆但必须继续)
+## Cases that look like blockers but aren't
 
-| 看似要停的情况 | 为什么不要停 | 正确做法 |
+| Situation that feels like "stop and ask" | Why you continue | What to do |
 |---|---|---|
-| 代码改完想让用户先看一眼 | 在 chat 里 mock review = 双重 review = 浪费 | 直接 step 4 push,让 review agent 真去看 |
-| auto-merge enable 完想确认 | DoD = state=MERGED,enable 不算 | 继续 babysit |
-| review 反馈很多想问优先级 | 优先级矩阵在 quality-gate.md,自己能判 | 按矩阵处理,不合理的反馈 reply 跳过 |
-| 60 分钟快到了想问要不要继续 | cap 是 hard cutoff,到点直接退出 | 60 min 到 → 给 cap 消息 → 退出 |
-| BEHIND 想问要不要追 | base 有更新 + 无冲突 = 必须追 | 直接 fetch + merge + push |
-| step 7 enable 完想问 babysit 要不要继续 | step 8 是 step 7 的紧接续 | 立即 babysit |
-| 5 分钟到了 review 还没全到齐想问怎么办 | 5 分钟到 + 有反馈进 6b;没反馈继续等到 15 min | 静默等 |
-| 改第 3 轮反馈想问"是不是改太多了" | 单条 ≤2 次、整 gate ≤60 min 是硬限 | 按规则继续,到限就停规则 |
+| Code is done, want user to review before push | The user authorized at worktree boundary; chat-review is wasted work | Push. Real review happens on the PR by `claude[bot]` |
+| Auto-merge enabled, want to confirm | DoD is `state=MERGED`, not "auto-merge on" | Babysit |
+| Lots of review feedback, unsure of priority | Severity matrix is in Step 9.3 — judge yourself | Adopt by default; reply-and-skip the unreasonable |
+| 60 min approaching, want to ask whether to continue | The cap is the cap — when it hits, stop. Until then, keep going | Continue |
+| `BEHIND` shows up | Base advanced, no conflicts → must update | `git fetch && git merge origin/<BASE> && git push` |
+| Step 10 done, wonder if babysit is needed | Step 11 is the same continuation. Auto-merge can fail (BEHIND, conflicts, CI flakes) | Babysit anyway |
+| 2-min wait window expired but not all reviewers have spoken | Tier B caps wait at 15 min; quiet by then = quiet | Wait until cap |
+| 3rd round of review fixes — feels like a lot | Cap is 5 rounds + 60 min total | Continue until cap |
 
 ---
 
-## 停下来时的格式
+## Format for blocker messages
 
-任何停下来的消息都按下面三段式:
+Three lines:
 
 ```
-⚠️ <一句话总结为什么停>
+⚠️ <one-sentence reason for stopping>
 
-<具体观察 / 数据 / 引用>
+<observation / data / quote>
 
-<需要你的决策 / 选项>
+<decision needed, with options>
 ```
 
-短、直接、给选项。**不写废话**("麻烦您"、"如果方便的话")。
+Be terse. No "could you please" or "if it's not too much trouble". Give the user options, not open-ended questions.

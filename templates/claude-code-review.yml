@@ -1,3 +1,15 @@
+# ⚠️ STATIC FALLBACK TEMPLATE
+# This file is the generic, non-customized YAML used by:
+#   bash scripts/configure-actions.sh --static-templates
+#
+# The DEFAULT path (without the flag) generates a tailored version via
+# scripts/render-workflows.sh — that one knows your project type, test commands,
+# style guides, and sensitive paths, and bakes them into the review prompt.
+#
+# Use this static template only if the renderer fails or you don't want
+# auto-detection. Otherwise let `bash scripts/render-workflows.sh` produce
+# the project-aware version.
+
 name: Claude Code Review
 
 on:

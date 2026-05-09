@@ -1,14 +1,14 @@
-# 官方 docs 关键点速查(零基础踩坑率最高的 10 条)
+# Official docs cheatsheet — the 10 things that bite beginners hardest
 
-> 摘录自 [anthropics/claude-code-action/docs](https://github.com/anthropics/claude-code-action/tree/main/docs)。
->
-> 这些不是文档全文,是**最容易踩坑、零基础最容易卡住**的关键点。每条给"文档原话 + 我们的处理"。
+Excerpts from [anthropics/claude-code-action/docs](https://github.com/anthropics/claude-code-action/tree/main/docs).
+
+These aren't full doc transcripts — they're the **highest-incidence pitfall points** for new users. Each entry has the official quote + how this skill handles it.
 
 ---
 
-## 1. OIDC `id-token: write` 是必需的
+## 1. OIDC `id-token: write` is required
 
-**官方原话**(faq.md):
+**Official (faq.md):**
 
 > If you're using the default GitHub App authentication, you must add the `id-token: write` permission to your workflow:
 > ```yaml
@@ -18,52 +18,51 @@
 > ```
 > The OIDC token is required in order for the Claude GitHub app to function.
 
-**我们的处理**:本 skill 提供的两个 workflow 模板(`templates/claude.yml` / `templates/claude-code-review.yml`)默认都设了 `id-token: write`。`scripts/check-actions.sh` 会校验缺失情况并报 WARN。
+**This skill:** both rendered workflow templates set `id-token: write` by default. `scripts/check-actions.sh` flags missing instances as WARN.
 
 ---
 
-## 2. `github-actions` user 不能触发嵌套 workflow
+## 2. The `github-actions` user can't trigger nested workflows
 
-**官方原话**(faq.md):
+**Official (faq.md):**
 
 > The `github-actions` user cannot trigger subsequent GitHub Actions workflows. This is a GitHub security feature to prevent infinite loops. To make this work, you need to use a Personal Access Token (PAT) instead, which will act as a regular user.
 
-**对本 skill 影响**:
+**Implications:**
 
-- ❌ 你写一个 workflow,里面调 `gh pr create` → 这个新 PR 不会触发 `claude-code-review.yml`
-- ❌ Action 里 push 了 commit → 新一轮 `pull_request: synchronize` 不会触发再 review
+- ❌ A workflow calling `gh pr create` won't trigger `claude-code-review.yml` on the new PR
+- ❌ When the Action pushes a commit, the resulting `pull_request: synchronize` won't re-fire review
 
-**变通**:
+**Workarounds:**
 
 ```yaml
-# 在 workflow 里要触发链式 action 时,改用 PAT
+# Use a PAT to chain into downstream workflows
 - name: Push (triggering downstream workflows)
   run: gh pr create ...
   env:
     GH_TOKEN: ${{ secrets.MY_PAT_WITH_REPO_SCOPE }}
 ```
 
-或:用 GitHub App token(`actions/create-github-app-token`)代替默认 GITHUB_TOKEN。
+Or use a GitHub App token (`actions/create-github-app-token`) instead of the default `GITHUB_TOKEN`.
 
-**实际频率**:本 skill 9 步流程里,**用户**手动 push 才能触发 review,不会撞上这个限制。但如果你扩展成"完全自动化"(`@claude` workflow 里又调 `gh pr create`),就会撞。
+**Frequency in this skill:** the 11-step flow has the **user** doing the manual push, so this limitation never bites. It would bite if you extended into "fully automated" (`@claude` workflow that itself calls `gh pr create`).
 
 ---
 
-## 3. Claude **不能改** `.github/workflows/*` 文件
+## 3. Claude **cannot edit** `.github/workflows/*` files
 
-**官方原话**(faq.md):
+**Official (faq.md):**
 
 > The GitHub App for Claude doesn't have workflow write access for security reasons. This prevents Claude from modifying CI/CD configurations that could potentially create unintended consequences.
 
-**对本 skill 影响**:
+**Implications:**
 
-- 用户在 PR 评论 `@claude 把 workflow 改一下加 paths-ignore` → Action 会失败,只留个 review 评论说"我没权限改 .github/workflows"
-- 修 workflow 必须**人工**改
+- A `@claude please update the workflow to add paths-ignore` comment will fail; the Action just leaves a "no permission" comment
+- Workflow edits must be **manual**
 
-**变通**:
+**Workaround:**
 
 ```yaml
-# 给 workflow 写权限(需要 PAT 或 custom GitHub App)
 - name: Generate App Token
   id: app-token
   uses: actions/create-github-app-token@v2
@@ -72,31 +71,31 @@
     private-key: ${{ secrets.APP_PRIVATE_KEY }}
 - uses: anthropics/claude-code-action@v1
   with:
-    github_token: ${{ steps.app-token.outputs.token }}    # ← App 装的时候勾选了 workflow 权限
+    github_token: ${{ steps.app-token.outputs.token }}    # the App must have workflow scope
 ```
 
-但**绝大多数情况下**这是 feature 不是 bug——不让 Action 改 CI 配置是好事。
+But **mostly this is a feature, not a bug** — preventing the Action from editing CI config is a safety win.
 
 ---
 
-## 4. 只 write-permission 用户能 trigger Claude
+## 4. Only write-permission users can trigger Claude
 
-**官方原话**(faq.md):
+**Official (faq.md):**
 
 > Only users with **write permissions** to the repository can trigger Claude. This is a security feature to prevent unauthorized use.
 
-**对本 skill 影响**:
+**Implications:**
 
-- 外部贡献者开 PR → 他自己评论 `@claude 帮我改 X` 不会触发(没有 write 权限)
-- 维护者评论 `@claude` 才会触发
+- An external contributor opens a PR and comments `@claude help with X` — won't trigger (no write perm)
+- A maintainer commenting `@claude` will trigger
 
-**变通**:用 `allowed_non_write_users` input 显式放行(**有安全风险,详见 anti-patterns.md H1**)。
+**Workaround:** `allowed_non_write_users` input explicitly opens this up — **security-sensitive**, see anti-patterns.md H1.
 
 ---
 
-## 5. Bash 工具默认全禁
+## 5. Bash tool is disabled by default
 
-**官方原话**(faq.md):
+**Official (faq.md):**
 
 > The Bash tool is **disabled by default** for security. To enable individual bash commands using `claude_args`:
 > ```yaml
@@ -104,12 +103,12 @@
 >   --allowedTools "Bash(npm:*),Bash(git:*)"   # Allows only npm and git commands
 > ```
 
-**对本 skill 影响**:
+**Implications:**
 
-- 没显式开 Bash → @claude 改完代码后**没法跑 typecheck / test 验证**就 commit
-- 默认模板**已开 Bash**,但加了黑名单防爆炸:`--disallowed-tools "Bash(git push --force *),Bash(rm -rf *)"`
+- Without explicit Bash enable, `@claude` can't run `typecheck` / `test` to verify before committing
+- This skill's default templates **enable Bash** but use a blocklist to prevent disasters: `--disallowed-tools "Bash(git push --force *),Bash(rm -rf *)"`
 
-**怎么细粒度白名单**(更安全,但易漏命令):
+**Granular allowlist version** (safer but easy to miss commands):
 
 ```yaml
 claude_args: |
@@ -120,17 +119,17 @@ claude_args: |
 
 ## 6. `403 Resource not accessible by integration`
 
-**官方原话**(faq.md):
+**Official (faq.md):**
 
 > This error occurs when the action tries to fetch the authenticated user information using a GitHub App installation token... **Solution**: The action now includes `bot_id` and `bot_name` inputs that default to Claude's bot credentials.
 
-**对本 skill 影响**:Action v1 已默认处理(`bot_id: 41898282` / `bot_name: claude[bot]`),不用管。如果你看到 403 → 升级 action 到 `@v1`。
+**This skill:** Action v1 handles this (`bot_id: 41898282` / `bot_name: claude[bot]`); nothing to do. If you see 403 → upgrade the Action ref to `@v1`.
 
 ---
 
-## 7. `--mcp-config` 加自定义 MCP server
+## 7. `--mcp-config` for custom MCP servers
 
-**官方原话**(configuration.md):
+**Official (configuration.md):**
 
 > ```yaml
 > claude_args: |
@@ -138,9 +137,9 @@ claude_args: |
 >   --allowedTools mcp__sequential-thinking__sequentialthinking
 > ```
 
-**何时用**:让 @claude 能查你私有数据库 / 内部 API / 文档站。本 skill 默认模板**没**接 MCP,需要时按上面格式加。
+**When to use:** let `@claude` reach private DBs, internal APIs, doc sites. This skill's default templates **don't** include MCP — add when needed.
 
-⚠️ **Secret 注入**:MCP server 需要 API key 时,通过 `env:` 传:
+⚠️ **Secret injection:** when MCP servers need API keys, pass via `env:`:
 
 ```yaml
 - name: Create MCP Config
@@ -154,13 +153,13 @@ claude_args: |
     claude_args: --mcp-config /tmp/mcp.json
 ```
 
-**绝不**把 `secrets.MY_API_KEY` 写进 git 里的 `.mcp.json`,临时文件 + heredoc 才安全。
+**Never** commit `secrets.MY_API_KEY` into a `.mcp.json` in git. Heredoc to a temp file is the safe pattern.
 
 ---
 
-## 8. `settings:` input 注入 hooks 和 env
+## 8. `settings:` input injects hooks and env
 
-**官方原话**(configuration.md):
+**Official (configuration.md):**
 
 > ```yaml
 > settings: |
@@ -172,56 +171,56 @@ claude_args: |
 >   }
 > ```
 
-**何时用**:复杂配置(model + env + permissions + hooks)塞 `claude_args` 行不通,改用 `settings` JSON 或文件路径。
+**When to use:** complex configuration (model + env + permissions + hooks) is impractical via `claude_args`; use `settings` (JSON or file path).
 
-**简单配置**:用 `claude_args`(`--max-turns 5 --model claude-sonnet-4-6`)即可。
+**Simple configuration:** stay on `claude_args` (`--max-turns 5 --model claude-sonnet-4-6`).
 
-**官方建议**:"Use `claude_args` for simple configurations and `settings` for complex configurations with hooks and environment variables."
+**Official guidance:** "Use `claude_args` for simple configurations and `settings` for complex configurations with hooks and environment variables."
 
 ---
 
-## 9. `enableAllProjectMcpServers` 默认 true
+## 9. `enableAllProjectMcpServers` is always true
 
-**官方原话**(configuration.md):
+**Official (configuration.md):**
 
 > The `enableAllProjectMcpServers` setting is always set to `true` by this action to ensure MCP servers work correctly.
 
-**含义**:你 repo 根 `.mcp.json` 里声明的 MCP server,Action 会**自动启用**。无需在 workflow 里再列。
+**Meaning:** any MCP server declared in your repo's `.mcp.json` will be auto-enabled by the Action. No need to list them in the workflow again.
 
-⚠️ **副作用**:`.mcp.json` 里别放敏感信息,会被 Action 加载执行。
+⚠️ **Side effect:** don't put sensitive info in `.mcp.json`; the Action will load it.
 
 ---
 
-## 10. Mode auto-detection(interactive vs automation)
+## 10. Mode auto-detection (interactive vs. automation)
 
-**官方原话**(faq.md):
+**Official (faq.md):**
 
 > The action intelligently detects whether to run in interactive mode or automation mode:
-> - **With `prompt` input**: Runs in **automation mode** - executes immediately without waiting for @claude mentions
-> - **Without `prompt` input**: Runs in **interactive mode** - waits for @claude mentions in comments
+> - **With `prompt` input**: Runs in **automation mode** — executes immediately without waiting for @claude mentions
+> - **Without `prompt` input**: Runs in **interactive mode** — waits for @claude mentions in comments
 
-**对本 skill 影响**:
+**This skill:**
 
-- `claude-code-review.yml` 传了 `prompt:` → **automation mode**,PR 一开自动跑
-- `claude.yml` 没传 `prompt:` → **interactive mode**,等 `@claude` 触发
+- `claude-code-review.yml` passes `prompt:` → **automation mode**, fires on PR open
+- `claude.yml` omits `prompt:` → **interactive mode**, waits for `@claude` mention
 
-**别撞**:同一个 workflow 文件,既传 `prompt:` 又监听 `issue_comment` → 行为混乱(自动跑还是等触发?)。模板把这俩拆成两个文件就是这个原因。
+**Don't mix:** in the same workflow file, both passing `prompt:` AND listening on `issue_comment` produces undefined behavior (auto-run or wait?). The split-file template avoids this.
 
 ---
 
-## 索引到原文
+## Index back to upstream
 
-| 主题 | 官方文档 |
+| Topic | Official doc |
 |---|---|
-| 配置(env / settings / MCP) | docs/configuration.md |
-| FAQ(认证 / 触发 / 调试) | docs/faq.md |
-| 安全(token / 权限 / 注入) | docs/security.md |
-| 安装步骤 | docs/setup.md |
-| 各种 use case 示例 | docs/usage.md |
-| 云厂商(Bedrock / Vertex / Foundry) | docs/cloud-providers.md |
-| 自定义自动化 | docs/custom-automations.md |
-| 局限性 | docs/capabilities-and-limitations.md |
-| 从 beta 升级 v1 | docs/migration-guide.md |
-| 实战方案合集 | docs/solutions.md |
+| Config (env / settings / MCP) | docs/configuration.md |
+| FAQ (auth / triggers / debug) | docs/faq.md |
+| Security (tokens / perms / injection) | docs/security.md |
+| Setup steps | docs/setup.md |
+| Use case examples | docs/usage.md |
+| Cloud vendors (Bedrock / Vertex / Foundry) | docs/cloud-providers.md |
+| Custom automations | docs/custom-automations.md |
+| Capabilities & limits | docs/capabilities-and-limitations.md |
+| Beta → v1 migration | docs/migration-guide.md |
+| Real-world solutions | docs/solutions.md |
 
-直接访问:<https://github.com/anthropics/claude-code-action/tree/main/docs>
+Direct: <https://github.com/anthropics/claude-code-action/tree/main/docs>

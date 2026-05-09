@@ -1,276 +1,246 @@
-# 反模式集合(哪些行为会让流程"看起来在跑但其实断了")
+# Anti-patterns — failure modes that break the loop without looking broken
 
-> 这个文件不是教你做什么,是教你**不做什么**。Path B 的失败模式 90% 集中在下面 7 类。
+This file is what *not* to do. 90% of skill failures cluster into the 8 categories below (A–G are workflow; H is Actions-specific config).
 
-## A. 中途停下问用户(最高频)
+## A. Stopping mid-flow to ask the user (most common)
 
-LLM 训练里有强烈的"完成阶段性工作就汇报"惯性。Path B 的设计是**一口气从 step 1 跑到 state=MERGED**,中途任何"汇报+确认"都会让用户必须回来一次手动 nudge。
+LLM training has a strong "report after each step" reflex. This skill is built to run end-to-end from Step 1 to `state=MERGED`. Every "report + confirm" forces the user to nudge you back.
 
-### 错误示例
+### Wrong
 
-| 错误说法 | 为什么错 | 正确做法 |
+| Wrong phrasing | Why wrong | Right behavior |
 |---|---|---|
-| "代码改完了,要不要 push?" | 用户授权已经在 worktree 入口给过 | 直接 push |
-| "PR 开好了,是否 enable auto-merge?" | --auto 自己等 CI,立即 enable 零风险 | 直接 enable |
-| "测试都过了,等你 review 一下" | 用户的 review 在 PR 页做,不在 chat 里做 | 跑完 step 6–8 后给 PR 链接,让用户去 PR 页看 |
-| "改完了,给你 diff 看一下?" | 在 chat 里 mock review = 双重 review = 浪费时间 | 直接 step 4 push,让 review agent 真去看 |
-| "先停下让你确认方向再继续" | 方向应该在动手前定,动手后只在 blocker 时停 | 见 [blockers.md](blockers.md) 的允许停下场景 |
-| "auto-merge 已 enable,可以了吧?" | DoD = state=MERGED,不是 enable | 继续 babysit |
+| "Code is done, want me to push?" | User already authorized at worktree boundary | Push |
+| "PR is open, should I enable auto-merge?" | `--auto` is itself deferred — enabling has zero risk | Enable immediately |
+| "Tests pass, want to review?" | The user reviews on the PR page, not in chat | Finish steps 6–11, give PR URL |
+| "Done, want to see the diff?" | Mock-reviewing in chat = double review = wasted | Push, let the actual review agent look |
+| "Want to confirm direction first?" | Direction is settled before code; mid-flow stops are blockers only | See `blockers.md` |
+| "Auto-merge enabled, are we good?" | DoD is `state=MERGED`, not "auto-merge on" | Babysit |
 
-### 正确示例
+### Right
 
 ```
-用户:"修一下 PR #100 review agent 提的 timeout 问题"
-你执行:
-  1. 看 review 评论(quality-gate 评估)
-  2. 改代码
-  3. typecheck/test
+User: "fix the timeout issue the review agent flagged on PR #100"
+
+You execute:
+  1. Read review (severity matrix from quality-gate.md)
+  2. Edit code
+  3. typecheck/lint/test
   4. commit
   5. push
-  6. 等下一轮 review (Monitor)
-  7. 没新反馈 → auto-merge 已经 enable,babysit 继续
-  8. state=MERGED → 给用户成功消息
-全程 0 次 chat 提问。
+  6. wait for next round (Monitor)
+  7. silence → auto-merge already enabled, babysit continues
+  8. state=MERGED → success message to user
+0 chat questions in between.
 ```
 
-## B. Babysit fake / 长 sleep
+## B. Fake babysit / long sleep
 
-### 反模式
+### Wrong
 
 ```bash
-# ❌ 这些都不工作
-sleep 600 && gh pr view 100         # 系统拦截
-echo "等 10 分钟" && sleep 600       # 同上
-"6 分钟后我回来看"                   # turn 结束 = 进程死了
-"我会持续监控"(实际什么都不做)       # 用户以为在 babysit,其实没人盯
+# All of these don't work
+sleep 600 && gh pr view 100         # harness intercepts
+echo "wait 10 min" && sleep 600     # same
+"I'll come back in 6 min"           # turn ends = process dies
+"I'll keep monitoring" (does nothing) # user thinks you're babysitting; you aren't
 ```
 
-### 正确做法
+### Right
 
-- 优先:Monitor (`mcp__claude_ai_*` 或框架内置)
-- 次选:`ScheduleWakeup({delaySeconds: 60, prompt: "/loop babysit PR #N"})`
-- 都没有:明确告诉用户"我没工具持续 babysit,请确保 always-on session 接管"
+- Preferred: Monitor (`mcp__claude_ai_*` or harness-provided)
+- Fallback: `ScheduleWakeup({delaySeconds: 60, prompt: "/loop babysit PR #N"})`
+- Neither: tell the user honestly "I have no babysit tooling; keep an always-on session active"
 
-**禁止说"我会回来检查"然后 turn 结束**。
+**Forbidden:** saying "I'll come back later" then ending the turn.
 
-## C. Monitor 自己改 jq 表达式
+## C. Modifying the Monitor jq expression
 
-### 反模式
+### Wrong
 
 ```bash
-# ❌ 这些都炸
-gh pr view 100 --json state,merge | jq '...'                  # 管道吞控制字符
-gh pr view 100 --json reviews --jq '.reviews[].author.login'  # 输出多行,prev 比较失效
-gh pr view 100 --json reviews --jq "\(.author):\(.body)"      # 嵌套字符串模板
+# All explode
+gh pr view 100 --json state,merge | jq '...'                  # pipe eats control chars
+gh pr view 100 --json reviews --jq '.reviews[].author.login'  # multi-line output, prev breaks
+gh pr view 100 --json reviews --jq "\(.author):\(.body)"      # nested string template
 ```
 
-### 正确
+### Right
 
-逐字复制 [monitor-template.md](monitor-template.md) 的 6 条铁律对应模板。**任何"小优化"都会踩坑**——因为这些模式都是踩坑后回退到的最稳形式。
+Copy the template from `monitor-template.md` verbatim. The 6 ironclad rules are non-negotiable — every "small optimization" is a previously-discovered failure mode.
 
-## D. Quality gate 时序作弊
+## D. Cheating the quality-gate timing
 
-### 反模式
+### Wrong
 
-| 错误时序 | 为什么错 |
+| Wrong timing | Why wrong |
 |---|---|
-| t=90s 内置 review(claude-review)说 OK → 立刻 step 7 | 第三方 review agent 还没来得及看 → 跳过 multi-agent gate |
-| t=10s 立刻 enable auto-merge 没等任何 review | gate 完全失效 |
-| 5 分钟到 reviewers 还是 1 个 → 强制等到 30 分钟 | 过度等待,整体超 60 分钟 cap |
-| 反馈不喜欢就跳过不 reply | review agent 下次还会重提同一条 → 死循环 |
+| At t=90s, built-in review says OK → straight to Step 10 | Third-party agents haven't even fired yet → multi-agent gate skipped |
+| At t=10s, enable auto-merge with no review wait | Gate completely defeated |
+| At t=5min, only 1 reviewer spoke → forced to wait until 30min | Over-waits; busts 60-min cap |
+| Don't like the feedback so don't reply | Same agent will resurface it next round → death loop |
 
-### 正确时序
+### Right
 
 ```
 t=0:        gh pr create
 t=0:        arm Monitor
-t<5min:     不进 6b(即使内置 review 已 approve)
-t=5min:     有反馈 → 6b;没反馈 → 继续
-t=15min:    强制 6b(有几条算几条)
-t=60min:    强制 step 7
+t<2 min:    don't enter Step 9.3 (Tier A) / t<5min (Tier B)
+t=tier-cap: enter 9.3 with whatever's there
+t=60min:    force Step 10 (hard cap)
 ```
 
-## E. Schema / 数据迁移当普通 feature PR 提
+## E. Schema/data migrations as ordinary feature PRs
 
-### 反模式
+### Wrong
 
-把 schema / migration 改动和业务代码塞同一个 PR,期望一次过 review + auto-merge。
+Bundling schema/migration changes with business code in one PR, expecting one-shot review + auto-merge.
 
-### 为什么错
+### Why wrong
 
-- review agent 看 schema diff 能识别隐藏 rename / 数据破坏的概率低(gate 失效)
-- 万一回滚需要 revert schema + 业务代码两层(不可逆复杂度叠加)
-- 阻塞别人 PR(schema 锁住 base 分支,其他 PR 全 BEHIND)
+- Reviewers struggle to spot hidden renames or data destruction in big diffs (gate is weak)
+- Rollback requires reverting two layers (compounding risk)
+- Blocks others' PRs (schema lock holds the base branch; everyone goes BEHIND)
 
-### 正确(Expand → Migrate → Contract 通用模式)
+### Right — Expand → Migrate → Contract
 
-1. **PR 1(expand)**:加入新字段(nullable / 带默认值);代码同时读写新旧两份
-2. 让 PR 1 在 staging 烤一段时间(典型 1 天),生产烤更久(典型 1 周)
-3. **PR 2(contract)**:删旧字段或加 NOT NULL 约束;代码切到只用新
+1. **PR 1 (expand):** add the new column nullable / with default; code reads + writes both old and new
+2. Bake on staging (typically 1 day) and prod (typically 1 week)
+3. **PR 2 (contract):** drop the old column or add NOT NULL; code uses only new
 
-每个 PR 单独走 Path B。具体节奏按你项目的发布节奏和数据量调整。
+Each PR runs through this skill independently. Adjust pacing to your release cadence.
 
-## F. 反客为主:违反项目级 CLAUDE.md / 风格规则
+## F. Letting the reviewer override project conventions
 
-review agent 偶尔会"建议加 emoji 让 UI 更友好" / "建议引入 lodash" / "建议改成 raw hex" 之类——这些有时是 review agent 自身训练偏差,如果**和项目级 CLAUDE.md / 风格指南顶部的硬规则直接冲突**,就**不是合理建议**。
+Review agents occasionally suggest things like "add an emoji for friendliness" / "introduce lodash" / "use raw hex colors". When these conflict with your project's `CLAUDE.md` / style guide top rules, they are **not valid suggestions**.
 
-### 正确反应
+### Right reaction
 
-PR 上 reply,**引用具体的项目规则**:
-
-```
-跳过:与 <项目 CLAUDE.md / STYLE_GUIDE.md 段落名> 冲突。
-- <规则 1 引用>
-- <规则 2 引用>
-```
-
-不要被 review agent "建议" 卷走。它的反馈级别要按你项目顶部规则**降权**或**反向处理**。
-
-## G. push 完不等下一轮 review,直接 step 7
-
-### 反模式
+Reply on the PR with the specific rule reference:
 
 ```
-6c push 反馈修复
-→ 直接 gh pr merge --auto
-→ 没等 CI 跑完 / agent 重审
+Skipping: conflicts with <CLAUDE.md / STYLE_GUIDE.md section name>:
+  - <rule 1 quoted>
+  - <rule 2 quoted>
 ```
 
-`--auto` 自己等 CI 没问题,但**跳过 6a 等 agent 重审**等于失去 multi-round gate。可能新引入的 commit 又有问题,agent 第二轮发现,但你已经 enable auto-merge → CI 一过就合 → 带 bug 进 base 分支。
+Don't be swayed. Downweight or invert the agent's suggestion based on your project's top-of-file rules.
 
-### 正确
+## G. Skipping the next-round wait after pushing fixes
 
-push → 回 6a 等 Monitor 捕获 reviewers 字段变化 → 重评估 → 直到反馈静默 → 进 step 7。
+### Wrong
 
-每个 PR 平均 2–3 轮 6a/6b/6c 是正常的。
+```
+Step 9.4 push fix
+→ straight to Step 10 (gh pr merge --auto)
+→ didn't wait for CI rerun or agent re-review
+```
 
-## H. Claude Code Actions 配置失误(仓库装了 Action 才会遇到)
+`--auto` waits for CI fine, but **skipping the agent re-review** loses the multi-round gate. New commits may have new bugs the agent flags on round 2 — but auto-merge is enabled, CI passes, and the bug merges.
 
-### H1. OAuth token 泄漏
+### Right
 
-#### 反模式
+push → loop back to Step 9.2 → Monitor catches `reviewers=` change → re-evaluate → silence → Step 10.
 
-把 `claude_code_oauth_token` 的值贴在:
-- chat / 代码评论 / 调试输出
-- commit message 或代码注释里
-- `.env` 文件 commit 上去
-- log 里 `echo $CLAUDE_CODE_OAUTH_TOKEN`
+Two-to-three rounds per PR is normal.
 
-#### 后果
+## H. Claude Code Actions config mistakes
 
-Token 一泄漏,所有看到的人都能用你的 Claude Pro/Max 订阅 quota,直到 quota 烧完或你撤销。
+### H1. OAuth token leaked
 
-#### 正确
+Putting the `claude_code_oauth_token` value into:
+- chat / code comments / debug output
+- commit messages / source comments
+- `.env` files committed to git
+- log lines like `echo $CLAUDE_CODE_OAUTH_TOKEN`
+
+A leaked token lets anyone with read access burn your Claude Pro/Max subscription quota until you revoke.
+
+**Right:**
 
 ```bash
-# 走 stdin 管道,token 不进 shell history、不进任何文件
+# Pipe via stdin so token never enters shell history or any file
 gh secret set CLAUDE_CODE_OAUTH_TOKEN -R <owner>/<repo>
-# 提示 "? Paste your secret" 时粘贴 → 回车
-
-# 或从临时文件读完立刻删:
-echo "<token>" > /tmp/.t && gh secret set CLAUDE_CODE_OAUTH_TOKEN -R <owner>/<repo> < /tmp/.t && rm /tmp/.t
+# At "? Paste your secret": paste, hit enter
 ```
 
-如果 token 已经泄漏:`claude setup-token` 重新生成,旧 token 会失效。
+If a token leaked: `claude setup-token` regenerates and invalidates the old one.
 
-### H2. `permissions: read-only` 但期望 @claude 改代码
+### H2. `permissions: read` but expecting `@claude` to commit
 
-#### 反模式
+The default from `/install-github-app` is read-only. User comments `@claude fix X`; the Action runs, finds no write permission, **silent fail** — leaves a "no permission" PR comment, code unchanged.
 
-`/install-github-app` 默认产物 `claude.yml` 的权限是:
+**Right:**
 
 ```yaml
 permissions:
-  contents: read
-  pull-requests: read
-  issues: read
-```
-
-用户在 PR 评论 `@claude 修 XXX`,Action 跑了但发现自己没写权限,**silent fail**——只在 PR 留个评论"我没权限改文件",代码完全没动。
-
-#### 正确
-
-```yaml
-permissions:
-  contents: write       # ← 必须 write,Action 才能 commit
+  contents: write       # required for @claude to commit
   pull-requests: write
   issues: write
-  actions: read         # 让它读 CI 日志
-  id-token: write
+  actions: read         # to read CI logs
+  id-token: write       # OIDC
 ```
 
-### H3. 撞 workflow 文件名
+### H3. Workflow filename collision
 
-#### 反模式
+Local hand-written `.github/workflows/claude.yml`, then `/install-github-app` auto-generates the same path, causing a push conflict — or worse, the install pushes to GitHub directly via API and your local copy gets rejected on next push.
 
-本地手写了 `.github/workflows/claude.yml`,跑 `/install-github-app` 又自动生成一份(同名),git push 时 conflict。或者更隐蔽:`/install-github-app` 直接通过 GitHub API 推上去了,你本地不知道,后续 push 自己版本被 reject。
-
-#### 正确
+**Right:**
 
 ```bash
-# 先看远端有什么
+# Check what's already remote
 gh api repos/<owner>/<repo>/contents/.github/workflows --jq '.[].name'
 
-# 有冲突文件先 pull --rebase 再决定保留哪个
+# Conflict? rebase first
 git pull --rebase origin main
 ```
 
-### H4. 没设 `concurrency`
+### H4. No `concurrency`
 
-#### 反模式
+Five pushes in a row → five workflow runs in parallel → 5x token consumption.
 
-用户连续 push 5 次到同一 PR,5 次 workflow 各跑一遍,token 五倍消耗。
-
-#### 正确
+**Right:**
 
 ```yaml
 concurrency:
   group: claude-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: true     # 旧 run 取消,只跑最新的
+  cancel-in-progress: true
 ```
 
-### H5. 没设 `timeout-minutes`
+### H5. No `timeout-minutes`
 
-#### 反模式
+Default GitHub Actions timeout is **6 hours**. A runaway Action (infinite loop, stuck LLM call, bun install hanging) burns 6h of tokens.
 
-GitHub Actions job 默认 timeout 是 **6 小时**。Action 跑飞了(死循环、卡 LLM 调用、bun 装失败等)能烧 6 小时 token。
-
-#### 正确
+**Right:**
 
 ```yaml
 jobs:
   review:
-    timeout-minutes: 10    # review job
+    timeout-minutes: 10    # review-only job
   claude:
-    timeout-minutes: 15    # @claude 修代码 job(可能多步)
+    timeout-minutes: 15    # @claude commit job (multi-step possible)
 ```
 
-### H6. `--max-turns` 默认 10 但任务复杂
+### H6. `--max-turns` too low for the task
 
-#### 反模式
+Default `--max-turns: 10` is fine for review or single-line fixes. Multi-file refactors at `--max-turns: 10` get cut off mid-job, leaving **half-done commits** — some files updated, some not, imports inconsistent.
 
-`@claude 重写整个 src/auth/` 这种大任务,默认 10 turns 不够,Claude 改到第 5 个文件就被掐断,**留下半成品 commit**:有的文件改了、有的没改、import 不一致。
-
-#### 正确
-
-按场景调:
+**Right:**
 
 ```yaml
-# review-only(只评论不改)
+# review-only (comment, no edit)
 claude_args: --max-turns 5
 
-# @claude 修小 bug
+# @claude small bug fix
 claude_args: --max-turns 10
 
-# @claude 跨多文件重构
+# @claude multi-file refactor
 claude_args: --max-turns 20
 ```
 
-`--max-turns` 选择参考表见 [workflow-yaml.md §C](workflow-yaml.md#c-claude_args-cli-flags)。
+See `workflow-yaml.md §C` for the full reference.
 
-### H7. 触发器配重复
-
-#### 反模式
+### H7. Duplicate triggers
 
 ```yaml
 # claude-code-review.yml
@@ -280,39 +250,33 @@ on:
 
 # claude.yml
 on:
-  pull_request:                 # ← 也接 pull_request
+  pull_request:                 # also listens on pull_request
     types: [opened, synchronize]
   issue_comment: ...
 ```
 
-每个 PR 跑两遍 review = token 双倍。
+Every PR runs review twice → 2× tokens.
 
-#### 正确
+**Right:** split by responsibility:
+- `claude-code-review.yml` — `pull_request` only (auto review)
+- `claude.yml` — comment events only (`issue_comment`, `pull_request_review_comment`, `pull_request_review`, `issues`)
 
-按职责分:
-- `claude-code-review.yml` 只接 `pull_request`(自动 review)
-- `claude.yml` 只接 comment 类事件(`issue_comment` / `pull_request_review_comment` / `pull_request_review` / `issues`)
+The renderer (`scripts/render-workflows.sh`) produces split triggers by default.
 
-按 [SETUP.md §4](../SETUP.md) 的模板不会撞。
-
-### H8. 把 OAuth token 当 API Key 用
-
-#### 反模式
+### H8. OAuth token stuffed into the API-key field
 
 ```yaml
-anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}   # ← 字段错位
+anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}   # ← wrong field
 ```
 
-OAuth token 走的是订阅认证流(走 Anthropic 的 OAuth endpoint);API Key 走的是 console 计费流。Action 看 input 字段名决定走哪条;字段错位 → 401。
+OAuth tokens authenticate via Anthropic's OAuth endpoint (subscription billing). API keys authenticate via console (per-token billing). The Action picks the auth flow based on which input field you set; mismatching causes 401.
 
-#### 正确
+**Right:** pick one, not both.
 
 ```yaml
-# 用订阅
+# subscription auth
 claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
-# 或用 API Key
+# OR API-key auth
 anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-
-# 二选一,不要两个都填
 ```

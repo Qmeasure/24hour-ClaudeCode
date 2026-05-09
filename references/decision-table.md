@@ -1,36 +1,36 @@
-# Babysit 事件处理决策表
+# Babysit decision table
 
-> step 8 的中枢。Monitor 每 emit 一行就触发这张表的查询。
+This is the central reference for Step 11. Every Monitor emit triggers a lookup here.
 
-## 完整事件 → 动作映射
+## Event format
 
-每行格式:`PR#<N> HH:MM:SS | state=X merge=Y checks=A:F,B:S,... reviewers=A,B,...`
+Each Monitor line: `PR#<N> HH:MM:SS | state=X merge=Y checks=A:F,B:S,... reviewers=A,B,...`
 
-### 1. state 字段
+## 1. `state` field
 
-| state | 动作 |
+| Value | Action |
 |---|---|
-| `OPEN` | 继续观察其他字段 |
-| `MERGED` | 退出 ✅,给用户贴成功消息 |
-| `CLOSED`(未 merge) | 调 `gh pr view <N> --json closedAt,closedReason` 查原因,告诉用户,退出 |
-| `ERR` | 单次 ERR 忽略;连续 3 次 ERR → 告诉用户 gh CLI 出问题,退出 |
+| `OPEN` | Continue watching the other fields |
+| `MERGED` | Exit ✅. Send the user the success message (template below) |
+| `CLOSED` (not merged) | `gh pr view <N> --json closedAt,closedReason` for cause, tell the user, exit |
+| `ERR` | Single ERR is benign. 3 consecutive ERRs → tell user `gh` is broken, exit |
 
-### 2. mergeStateStatus 字段
+## 2. `mergeStateStatus` field
 
-| merge | 含义 | 动作 |
+| Value | Meaning | Action |
 |---|---|---|
-| `CLEAN` | 无冲突,所有条件满足 | 静默等 auto-merge 接管 |
-| `UNSTABLE` | 至少一个 non-required check 失败 | 静默(不阻止 merge) |
-| `BLOCKED` | required check 未过 / approval 缺 | 静默等 |
-| `BEHIND` | base 分支有新 commit,**无冲突** | **必须手动追**(见下方 BEHIND 处理) |
-| `DIRTY` | 有冲突 | **必须解冲突**(见下方 DIRTY 处理) |
-| `UNKNOWN` | GitHub 还没算完 | 静默,下个 tick 会更新 |
+| `CLEAN` | No conflicts, all merge conditions met | Stay silent, auto-merge takes over |
+| `UNSTABLE` | At least one non-required check failed | Stay silent (doesn't block merge) |
+| `BLOCKED` | Required check pending, or approval missing | Stay silent, wait |
+| `BEHIND` | Base branch advanced, **no conflicts** | **Must update manually** (see below) |
+| `DIRTY` | Conflicts present | Resolve (see below) |
+| `UNKNOWN` | GitHub still computing | Silent, next tick will refresh |
 
-⚠️ **如果项目 repo 开了 "Require branches up-to-date before merging",auto-merge 看到 BEHIND 不会自动追**——必须 babysit 推 update。可用 `gh repo view --json branchProtectionRules` 确认。
+⚠️ If branch protection has "Require branches up-to-date before merging", auto-merge **does not auto-pull** on `BEHIND` — you must push the update. Confirm with `gh repo view --json branchProtectionRules`.
 
-#### BEHIND 处理(无冲突)
+### Handling `BEHIND` (no conflicts)
 
-直接执行,不询问用户(`<BASE_BRANCH>` 替换为项目实际 base 分支):
+Run without asking (replace `<BASE_BRANCH>` with the actual base):
 
 ```bash
 git fetch origin <BASE_BRANCH>
@@ -38,144 +38,144 @@ git merge origin/<BASE_BRANCH> --no-edit
 git push
 ```
 
-push 后 Monitor 会捕获 `merge=CLEAN` 或下一轮 review 的 `reviewers=` 变化,继续走。
+The Monitor will pick up `merge=CLEAN` (or the next round's `reviewers=`) and continue.
 
-#### DIRTY 处理(有冲突)
+### Handling `DIRTY` (conflicts)
 
-默认**告诉用户准备解冲突,等确认**。但满足下面任一条件可以直接处理:
+Default: tell the user you're about to fetch+merge and ask to confirm. Two exceptions where you can proceed without asking:
 
-- 冲突文件全是新增的(双方都 add 了同名文件,明显是 rebase 噪声 + 自己改动应该胜出)
-- 冲突全是 lockfile(`pnpm-lock.yaml` / `package-lock.json` / `yarn.lock` / `Cargo.lock` / `poetry.lock` 等)→ 重跑安装命令重新生成
+- All conflicts are added-new files (both sides added a file with the same name; rebase noise — keep your version unless overlap is suspicious)
+- All conflicts are lockfiles (`pnpm-lock.yaml` / `package-lock.json` / `yarn.lock` / `Cargo.lock` / `poetry.lock` / `go.sum`) — re-run the install command to regenerate
 
-其他情况(业务代码冲突)→ 不要乱合,给用户:
+Anything else (real logic conflicts) → see `blockers.md` #4.
 
-```
-⚠️ PR #<N> 出现 DIRTY 冲突
-冲突文件:
-- src/foo.ts
-- src/bar.tsx
-我准备 git fetch origin <BASE_BRANCH> && git merge origin/<BASE_BRANCH>,会需要手动解决业务冲突。是否继续?
-```
+## 3. `statusCheckRollup` field
 
-### 3. statusCheckRollup 字段
+Format: `name1:conclusion1,name2:conclusion2,...` e.g. `test:success,claude-review:success,build:failure`
 
-格式:`name1:conclusion1,name2:conclusion2,...`,例如 `test:success,claude-review:success,build:failure`
-
-| 出现 | 动作 |
+| Saw | Action |
 |---|---|
-| 任一 `:failure` | **不自动 retry**。退出 babysit,告诉用户失败 check 名 + 给出查日志命令 |
-| 任一 `:cancelled` | 类似 failure,告诉用户 |
-| 全部 `:success` 或 `:skipped` | 静默等 |
-| `:pending` / `:in_progress` 在跑 | 静默等 |
+| Any `:failure` | **Do not auto-retry.** Exit babysit, tell user the failed check name + log command |
+| Any `:cancelled` | Treat like failure |
+| All `:success` or `:skipped` | Stay silent, wait |
+| `:pending` / `:in_progress` | Stay silent, wait |
 
-failure 时给用户的消息:
+Failure message template (see `blockers.md` #5 for the full version):
 
 ```
-❌ PR #<N> CI 失败:
+❌ PR #<N> CI failed:
 - <check name>: failure
-查日志:gh run view --log-failed --job=<job_id>
-(job_id 可从 gh pr checks <N> 拿到)
-我已退出 babysit,等你修了重新 push 后再 arm Monitor 继续。
+Log: gh run view --log-failed --job=<job_id>
+(Get job_id from: gh pr checks <N>)
+I exited babysit. Push a fix and I'll resume.
 ```
 
-**为什么不自动 retry**:CI failure 通常 ≠ flaky(如果项目 CI 稳定),更多是真 bug。retry 不解决根因,只是浪费时间。如果你项目的 CI 真很 flaky,在告诉用户失败时主动建议"如果是 flaky 试 `gh run rerun <id>`",不要自动重试。
+**Why not auto-retry:** if the project's CI is stable, failures are real bugs, not flakes. Retry doesn't fix root cause. If your CI genuinely is flaky, mention `gh run rerun <id>` as an option in the user message but don't run it automatically.
 
-### 4. reviewers 字段
+## 4. `reviewers` field
 
-格式:`name1,name2,name3`,按字典序
+Format: `name1,name2,...`, alphabetical
 
-| 变化 | 动作 |
+| Change | Action |
 |---|---|
-| 多了新名字(如从 `claude[bot]` 变 `claude[bot],Codex`) | **回 step 6 多轮 gate**:调 `gh pr view <N> --json reviews` 看新 review 内容,按 [quality-gate.md](quality-gate.md) 评估 |
-| 出现 `claude[bot]` | Claude Code Action 已 review,正常评估流程 |
-| 用户在 PR 评论 `@claude 修 XXX` 后 reviewers 暂时不变 | Action 在 runner 里跑,**等 30s–3min**;30s 后查 `gh run list -w claude.yml --limit 1` 确认 workflow 在跑(参 [quality-gate.md §2.5](quality-gate.md)) |
-| `@claude` 委托后 5min 还没新 commit | Action 跑挂了:看 `gh run view <run-id> --log-failed`,常见 401(token)/ timeout / quota 用尽 → [blockers.md #8](blockers.md) |
-| 名字没变但有新 review event | 同上(agent 可能在第二次 review 推翻第一次结论) |
-| 没变 | 静默 |
+| New name appears (e.g. `claude[bot]` → `claude[bot],Codex`) | Loop back to Step 9.3. Pull the new review with `gh pr view`, evaluate per `quality-gate.md` |
+| `claude[bot]` appears | Standard: the auto-review landed |
+| User commented `@claude fix X` and reviewers field unchanged | Action runs in 30s–3min. After 30s, run `gh run list -w claude.yml --limit 1` to confirm the workflow started |
+| `@claude` mention but no new commit after 5 minutes | Action failed: `gh run view <run-id> --log-failed`. Common: 401 (token) / timeout / quota — see `blockers.md` #8 |
+| Same names, but new review event timestamp | An agent posted a second review (could overturn the first); re-evaluate |
+| No change | Stay silent |
 
-获取最新 review 内容:
+Pull the latest review:
 
 ```bash
-# 最近一条 review by author
+# Most recent review
 gh pr view <N> --json reviews --jq '.reviews[-1]'
 
-# 特定 agent 的所有 review
+# All reviews from a specific agent
 gh pr view <N> --json reviews --jq '.reviews[] | select(.author.login=="<agent-login>")'
 
-# Claude Code Action 这条 review
+# Claude Code Action's review specifically
 gh pr view <N> --json reviews --jq '.reviews[] | select(.author.login=="claude[bot]")'
 ```
 
-### 5. 时间维度
+## 5. Time
 
-| 时间 | 动作 |
+| Time since PR open | Action |
 |---|---|
-| t < 5 min | 不进 step 7,无论 reviewer 状态如何 |
-| 5 min ≤ t < 15 min | 收到反馈进 6b,没收到继续等 |
-| t = 15 min | 强制进 6b(有几条算几条) |
-| t = 60 min | **强制 cap**:告诉用户当前 state 和已发生事件,退出 |
+| t < 2 min (Tier A) / t < 5 min (Tier B) | Do not enter Step 9.3 yet, regardless of reviewer field |
+| Tier A wait expired but no reviews | Continue waiting until 8-min cap |
+| Tier B wait expired but no reviews | Continue waiting until 15-min cap |
+| t ≥ tier cap (8 min / 15 min) AND `reviewers` empty | Trigger Action diagnostic (`blockers.md` #7) |
+| t ≥ tier cap AND reviews landed | Enter Step 9.3, evaluate feedback |
+| t = 60 min | **Hard cap.** Tell user current state + history, exit (see `blockers.md` #8) |
 
-## 沉默处理
+## Silence handling
 
-每个 tick **没有变化**时 Monitor 不 emit。这不是 bug:
+Monitor stays silent when nothing changes. This is correct, not a bug:
 
-- 用户看不到任何输出 = PR 状态稳定
-- agent 应该理解 "无消息 = 一切正常",**不要**主动去 `gh pr view` 复查
+- No emit = PR is stable
+- Don't ad-hoc poll `gh pr view` "to be sure"
 
-如果 30 分钟完全无 emit(PR 一直 OPEN + CLEAN + 等 auto-merge):
-- 检查 `autoMergeRequest`:`gh pr view <N> --json autoMergeRequest --jq '.autoMergeRequest.mergeMethod // "off"'`
-- 如果是 `off` → step 7 没执行成功,重跑 `gh pr merge --auto --merge <N>`
-- 如果是 `merge`(或 squash)→ 真在等 required check,继续静默
-
-⚠️ **档位 A(Action 主导)的额外沉默检查**:
-
-如果 PR 开 5 分钟以上 `reviewers=` 字段一直空(连 `claude[bot]` 都没出现),**workflow 没跑**:
+If 30 minutes elapse with zero emits and `state=OPEN` + `merge=CLEAN`:
 
 ```bash
-# 看 review workflow 有没有触发过
-gh run list -w claude-code-review.yml --limit 5
-
-# 没看到任何 run → workflow 配置 / App / secret 出问题
-# 看到 run 但 status=failure → 看日志
-gh run view <run-id> --log-failed
+gh pr view <N> --json autoMergeRequest --jq '.autoMergeRequest.mergeMethod // "off"'
 ```
 
-**这是 [blockers.md #7](blockers.md) 的"Actions 没触发"场景**,停下来给用户(workflow 没跑就没人 review,继续 babysit 也没用)。
+- `off` → Step 10 didn't take effect, re-run `gh pr merge --auto --merge <N>`
+- `merge` (or `squash`/`rebase`) → genuinely waiting on required checks, stay silent
 
-## "完成"消息模板
+### Tier A specific silence check
 
-state=MERGED 后退出,给用户:
+If 5+ minutes since PR open and `reviewers` is still empty (not even `claude[bot]`):
+
+```bash
+gh run list --workflow claude-code-review.yml --limit 5
+gh run view <run-id> --log-failed   # if a run exists but failed
+```
+
+This is `blockers.md` #7 — Actions didn't trigger. Stop, tell the user.
+
+## Message templates
+
+### Success (state=MERGED)
 
 ```
 ✅ PR #<N> merged: <PR URL>
-- review 轮次:<N> 轮
-- 采纳反馈:<X> 条(来自 <agent A>, <agent B>)
-- 跳过反馈:<Y> 条(reason: ...)
-- 总耗时:<HH:MM>(从开 PR 到 MERGED)
-- 关联 issue:#<X>(已自动关闭)
+
+  review rounds:    <N>
+  feedback adopted: <X> items (from <agent A>, <agent B>)
+  feedback skipped: <Y> items (reasons: <one-line summary>)
+  total time:       <HH:MM> (from PR open to MERGED)
+  linked issue:     #<X> (auto-closed)
 ```
 
-不需要"接下来呢"、"是否还有其他事"。end of turn。
+End of turn. No "anything else?".
 
-## 60 分钟 cap 消息模板
-
-```
-⚠️ PR #<N> babysit 60 分钟 cap 触达
-当前 state: <state>
-当前 merge: <merge>
-最近 events:
-  - HH:MM:SS state=X merge=Y ...
-  - HH:MM:SS state=X merge=Y ...
-PR 链接:<PR URL>
-你来接管:通常是 <BLOCKED 等 review> / <DIRTY 解冲突> / <CI failure 修>
-```
-
-## CLOSED 未 merge 消息模板
+### 60-minute cap
 
 ```
-❌ PR #<N> 被关闭但未合并
-关闭原因:<closedReason 字段>
-关闭时间:<closedAt>
-PR 链接:<PR URL>
-我已退出 babysit。
+⚠️ PR #<N> hit the 60-minute babysit cap.
+
+  current state:  <state>
+  merge status:   <merge>
+  recent events:
+    - HH:MM:SS state=X merge=Y ...
+    - HH:MM:SS state=X merge=Y ...
+  PR URL:         <PR URL>
+
+You take over from here. Most likely action:
+  - <BLOCKED, waiting on required reviewer> / <DIRTY, conflicts to resolve> / <CI fix needed>
+```
+
+### CLOSED without merge
+
+```
+❌ PR #<N> closed without merging.
+
+  reason:   <closedReason>
+  time:     <closedAt>
+  PR URL:   <PR URL>
+
+Babysit exited.
 ```

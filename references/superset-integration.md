@@ -1,161 +1,257 @@
-# Superset 集成:多 worktree 流水线无缝接入
+# Superset workspace integration
 
-> 这个文件解释 worktree-pr-flow skill 怎么和 [Superset](https://docs.superset.sh) 客户端协作。
->
-> 适用场景:你用 Superset 管理一个 repo 下的多个 worktree(每个 worktree 是一个 feature / fix / chore),希望开 workspace 时**自动校验** Claude Code Actions 配置健康。
+This document explains how worktree-pr-flow plugs into the [Superset](https://docs.superset.sh) client.
+
+**Use case:** you manage multiple worktrees of one repo through Superset (each workspace = one feature/fix/chore worktree). When opening a workspace, you want **automatic verification** that Claude Code Actions is healthy.
 
 ---
 
-## 1. Superset 三个钩子时机
+## 1. The three Superset hooks
 
-| 钩子 | 何时跑 | 用来干嘛 |
+| Hook | When it runs | Purpose |
 |---|---|---|
-| `setup` | **新 workspace 创建后**(worktree 已 git checkout 完毕) | 校验环境、装依赖、复制 .env |
-| `teardown` | **workspace 删除前**(确认完才真删) | 关闭 docker、清缓存;**失败不阻塞**,可 force-delete |
-| `run` | 用户点 Run 按钮 | 起 dev server、跑测试,在专用 pane 里运行 |
+| `setup` | After a new workspace is created (worktree git checkout complete) | Verify env, install deps, copy `.env` |
+| `teardown` | Before workspace deletion (only after teardown completes) | Stop Docker, clear caches; **failure does not block**, force-delete is available |
+| `run` | When the user clicks Run | Start dev server / run tests in the dedicated pane |
 
-每个钩子是字符串数组,顺序执行。任一非 0 退出 = 钩子失败。
+Each hook is a string array, executed in order. Any non-zero exit = hook failure.
 
-## 2. Superset 提供的 3 个环境变量
+## 2. Three environment variables Superset provides
 
-跑 setup/teardown/run 命令时:
+When running setup/teardown/run commands, Superset sets:
 
-| 变量 | 含义 |
+| Variable | Meaning |
 |---|---|
-| `SUPERSET_ROOT_PATH` | 主 repo 的绝对路径(用来定位 skill 安装位置 / 模板) |
-| `SUPERSET_WORKSPACE_NAME` | 当前 workspace 名(通常 = branch 名) |
-| `SUPERSET_WORKSPACE_PATH` | 当前 worktree 的绝对路径(命令执行时 cwd 就是这里) |
+| `SUPERSET_ROOT_PATH` | Absolute path to the main repo checkout (used to locate skill installation, templates) |
+| `SUPERSET_WORKSPACE_NAME` | Current workspace name (usually = branch name) |
+| `SUPERSET_WORKSPACE_PATH` | Absolute path to this worktree (cwd when commands run) |
 
-## 3. 配置文件查找优先级
+## 3. Config file lookup priority
 
-Superset 读配置按这个顺序(找到第一个就用):
+Superset reads in this order (first found wins):
 
-1. `~/.superset/projects/<project-id>/config.json` — **个人覆盖**(不进版本库)
-2. `<worktree>/.superset/config.json` — **本 worktree 专用**(很少用)
-3. `<repo-root>/.superset/config.json` — **项目默认**(进版本库,团队共享)
+1. `~/.superset/projects/<project-id>/config.json` — **personal override** (not in version control)
+2. `<worktree>/.superset/config.json` — **per-worktree** (rarely useful)
+3. `<repo-root>/.superset/config.json` — **project default** (in version control, team-shared)
 
-另外:`<repo-root>/.superset/config.local.json` 是**自动 gitignored** 的私人覆盖。
+Bonus: `<repo-root>/.superset/config.local.json` is **auto-gitignored** for personal additions to project defaults.
 
 ---
 
-## 4. 推荐配置(本 skill 自带模板)
+## 4. Recommended config (the skill's template)
 
-仓库根目录的 `.superset/config.json`(通过 `bash scripts/install-superset-config.sh` 安装):
+`.superset/config.json` at the repo root (installed by `bash scripts/install-superset-config.sh`):
 
 ```json
 {
   "setup": [
-    "echo '▸ Verifying Claude Code Actions config in $SUPERSET_ROOT_PATH'",
-    "if [ -f \"$SUPERSET_ROOT_PATH/scripts/check-actions.sh\" ]; then bash \"$SUPERSET_ROOT_PATH/scripts/check-actions.sh\" || echo '⚠ Action 配置不全。在 root repo 跑 bash scripts/configure-actions.sh 一次性修。'; else echo 'ℹ scripts/check-actions.sh 不存在(skill 没装到本 repo?跳过校验)'; fi"
+    "if [ -x \"$SUPERSET_ROOT_PATH/.claude/plugins/24hour-ClaudeCode/scripts/superset-launch.sh\" ]; then bash \"$SUPERSET_ROOT_PATH/.claude/plugins/24hour-ClaudeCode/scripts/superset-launch.sh\"; else echo '⚠ 24hour-ClaudeCode plugin not installed; run /24hour-ClaudeCode:setup in main checkout'; fi"
   ],
   "teardown": [
-    "echo '▸ Workspace teardown for $SUPERSET_WORKSPACE_NAME'",
-    "echo '提醒:本 worktree 对应的 PR 是否已 MERGED?如果是,在主 checkout 上跑:git worktree remove $SUPERSET_WORKSPACE_PATH && git branch -d <branch-name>'"
+    "echo '▸ Workspace teardown: $SUPERSET_WORKSPACE_NAME'",
+    "echo 'Reminder: if PR is MERGED, clean up from main: git worktree remove $SUPERSET_WORKSPACE_PATH && git branch -d $SUPERSET_WORKSPACE_NAME'"
   ],
   "run": []
 }
 ```
 
-**为什么 setup 只校验不重做配置**:
+The `setup` hook calls `superset-launch.sh`, which:
 
-- 装 GitHub App、生成 OAuth token、设 secret、推 workflow YAML 是 **repo-level 一次性**操作
-- 每开新 workspace 重做这些会:浪费时间、token 重复生成、secret 反复覆盖
-- 正确做法:首次手动 `bash scripts/configure-actions.sh` 跑一遍;之后 setup 只 `check-actions.sh` 校验
+1. Checks the skill is installed at `<root>/.claude/plugins/24hour-ClaudeCode`
+2. Health-checks Claude Code Actions
+3. Prints a one-screen cheat sheet of commands you can run inside this workspace
 
-**为什么 teardown 不自动删 worktree**:
+**Why setup verifies but doesn't reconfigure:**
 
-- 你在 worktree 里执行 teardown,删自己等于自杀(Superset force-delete 就是绕过这个失败)
-- worktree 清理必须在主 checkout 上做(详见 SKILL.md "用户合并后的清理"段)
+- Installing the GitHub App, generating the OAuth token, setting the secret, pushing workflow YAML — all of these are **repo-level one-time** operations.
+- Re-doing them per workspace would: waste time, regenerate tokens unnecessarily, repeatedly overwrite secrets.
+- Right pattern: run `/24hour-ClaudeCode:setup` once from main checkout. Setup just verifies after.
 
----
+**Why teardown doesn't auto-remove the worktree:**
 
-## 5. 团队共享 vs 个人覆盖
-
-**团队共享部分**(进版本库):
-- `.superset/config.json` — 默认 setup/teardown
-- `.github/workflows/claude*.yml` — workflow 配置
-- `templates/` — workflow 模板
-
-**个人不进版本库**:
-- `.superset/config.local.json` — 个人加的 setup 命令(如 `cp ~/private.env .env`)
-- `~/.superset/projects/<id>/config.json` — 完全覆盖项目默认
+- Teardown runs *inside* the worktree. Removing yourself = suicide (Superset's force-delete bypasses this).
+- Worktree cleanup must happen in the main checkout (see `SKILL.md` "user clean-up after merge" section).
 
 ---
 
-## 6. 多 worktree 工作流的典型路径
+## 4.5 How to actually activate the integration
 
-零基础新仓库 → 第一次接入 Claude Code Actions + Superset:
+Running `bash scripts/install-superset-config.sh` only **creates the file**. By itself, this doesn't make Superset use it. Three steps complete activation:
 
-```
-┌─────────────────────────────────────────────┐
-│ 主 checkout(repo root)                     │
-│ $ cd ~/code/myrepo                          │
-│ $ ln -s /path/to/worktree-pr-flow .claude/skills/  ← 装 skill │
-│ $ bash scripts/configure-actions.sh         ← 一次性配 Actions │
-│ $ bash scripts/install-superset-config.sh   ← 注入 Superset config │
-│ $ git add .superset/ .github/ && git commit -m 'wire up Claude Code Actions' │
-│ $ git push                                  │
-└─────────────────────────────────────────────┘
-                    │
-                    │ Superset 用户开新 workspace
-                    ▼
-┌─────────────────────────────────────────────┐
-│ Superset workspace #1(自动创建 worktree)   │
-│ → 自动跑 setup → check-actions.sh → ✓        │
-│ → 用户在终端写代码、按 SKILL.md 9 步流程     │
-│ → PR open → Claude Code Action 自动 review   │
-│ → @claude 修反馈 → auto-merge → MERGED       │
-└─────────────────────────────────────────────┘
-                    │
-                    │ 同时再开 workspace #2 #3 ...
-                    ▼
-┌─────────────────────────────────────────────┐
-│ workspace #2/#3 各自独立 worktree           │
-│ 互不干扰、共享同一 repo 的 Actions 配置     │
-└─────────────────────────────────────────────┘
-```
+### Step 1: commit + push (team-shared mode)
 
-后续仓库:重复主 checkout 那 4 行命令,每个 repo 配一次。
-
----
-
-## 7. 调试 Superset 钩子
-
-钩子失败时:
+For teammates to inherit the config, it must be in version control. The installer asks "commit + push now?" — pick yes. Otherwise, manually:
 
 ```bash
-# 看 setup 输出(Superset 启动 workspace 时显示在终端 pane)
-# 找到 "✗ ERROR" 或 "⚠ WARN" 行 → 对应 check-actions.sh 的检查项
-
-# 手动跑校验(在 worktree 里)
-bash "$SUPERSET_ROOT_PATH/scripts/check-actions.sh" -v
-
-# 一次性修
-cd "$SUPERSET_ROOT_PATH" && bash scripts/configure-actions.sh
+git add .superset/config.json
+git commit -m "Add Superset workspace config"
+git push
 ```
 
-如果 teardown 失败导致 workspace 删不掉:Superset 提供 **Force Delete**,跳过 teardown 直接删。**只在确认 teardown 命令本身错(而不是真有 docker volume / lock 没清)时用**。
+(With `--local`, the config goes to `.superset/config.local.json` and is **auto-added to .gitignore**. Skip this step.)
+
+### Step 2: register the repo with Superset (one-time)
+
+Superset must know the repo is a "project" before it watches `.superset/config.json`. How:
+
+| Your state | Action |
+|---|---|
+| Already added this repo to Superset | **Nothing**. Next workspace creation picks up the config |
+| Not added yet | Open Superset client → Add Project → point at this repo's local path |
+| Don't have Superset locally | See https://docs.superset.sh. If your team uses it but you don't, just commit the config — they pick it up |
+
+> ⚠️ This step has **no standard CLI** — different Superset client versions differ. The installer detects `superset` in PATH but does not run any registration command.
+
+### Step 3: verify activation (anytime)
+
+**Without opening Superset:**
+
+```bash
+bash scripts/install-superset-config.sh --verify
+```
+
+Expected output:
+
+- ✓ Found `.superset/config.json`
+- ✓ Setup hook references `superset-launch.sh`
+- ✓ scripts/check-actions.sh exists and is executable
+- ✓ `.superset/config.json` is tracked in git
+- ✓ Superset CLI is installed: `/usr/local/bin/superset`
+
+Any ✗ exits non-zero.
+
+**With Superset, open a fresh workspace:** the workspace terminal pane should show:
+
+```
+╭─────────────────────────────────────────────────────────────────────╮
+│ worktree-pr-flow — workspace ready                                  │
+│   worktree: feat/my-thing                                           │
+│   path:     /path/to/worktree                                       │
+╰─────────────────────────────────────────────────────────────────────╯
+
+✓ Skill installed at /path/to/repo/.claude/plugins/24hour-ClaudeCode
+✓ Claude Code Actions configured
+
+─── What to do in this workspace ───
+  ...
+```
+
+Seeing this banner = integration is live.
+
+### Common misunderstandings
+
+| Misunderstanding | Reality |
+|---|---|
+| "Running install-superset-config.sh activated it" | No — the script only creates the file. Activation = commit + push + Superset knows the repo |
+| "Existing workspaces also auto-run setup" | No — setup only runs on **new** workspace creation. Existing workspaces must be recreated to pick it up |
+| "Putting config.json in the worktree is enough" | No — Superset priority: `~/.superset/projects/<id>/config.json` > `<worktree>/.superset/config.json` > `<repo-root>/.superset/config.json`. For team sharing, repo root |
+| "config.local.json should also be committed" | No — it's designed to be personal, auto-gitignored |
 
 ---
 
-## 8. 与 SKILL.md 9 步流程的关系
+## 5. Team-shared vs personal customization
 
-Superset setup 钩子**不参与** 9 步流程的执行,它只是**准备阶段**:
+**Team-shared** (in version control):
+- `.superset/config.json` — default setup/teardown
+- `.github/workflows/claude*.yml` — workflow config
+- `templates/` — workflow templates
 
-| Superset 阶段 | 对应 skill 流程 |
-|---|---|
-| Setup(workspace 创建) | **Pre-flight 之前**;校验通过 = skill 能跑;不通过 = 跑 configure-actions.sh 修 |
-| 用户在终端跑 skill | 9 步流程(Pre-flight → 写代码 → 验证 → commit → push → PR → quality gate → auto-merge → babysit) |
-| Teardown(workspace 删除) | **DoD 之后**;skill 已经把 PR merge 完了;teardown 提示用户在主 checkout 删 worktree |
+**Personal-only** (not in version control):
+- `.superset/config.local.json` — your additions on top of project default (e.g. `cp ~/private.env .env`)
+- `~/.superset/projects/<id>/config.json` — completely overrides project defaults
+
+### Customizing without losing defaults
+
+`.superset/config.local.json` is the right place. Example:
+
+```json
+{
+  "setup": [
+    "bash .claude/plugins/24hour-ClaudeCode/scripts/superset-launch.sh",
+    "cp ~/private.env .env",
+    "docker-compose up -d db"
+  ]
+}
+```
+
+Note: when both `.superset/config.json` AND `.superset/config.local.json` exist, Superset uses **only the highest-priority one** found. So if you put a `config.local.json` it must include all the setup commands you want (re-include the launch script).
 
 ---
 
-## 9. 故障排查速查
+## 6. Typical multi-worktree workflow
 
-| 现象 | 排查 |
+First-time onboarding from a fresh repo:
+
+```
+┌────────────────────────────────────────────────────┐
+│ Main checkout (repo root)                          │
+│ $ cd ~/code/myrepo                                 │
+│ $ git clone <skill-url> .claude/plugins/24hour-ClaudeCode │
+│ $ bash /24hour-ClaudeCode:setup │
+│   (installs skill + Actions + Superset config)     │
+│ $ git push   # (already done by onboarder)         │
+└────────────────────────────────────────────────────┘
+                    │
+                    │ User opens new workspace in Superset
+                    ▼
+┌────────────────────────────────────────────────────┐
+│ Superset workspace #1 (worktree auto-created)      │
+│ → setup hook runs superset-launch.sh → ✓           │
+│ → cheat sheet prints in terminal pane              │
+│ → User edits code in Claude Code                   │
+│ → PostToolUse hook fires → skill auto-engages      │
+│ → PR open → Action review → auto-merge → MERGED    │
+└────────────────────────────────────────────────────┘
+                    │
+                    │ Concurrently open workspace #2, #3...
+                    ▼
+┌────────────────────────────────────────────────────┐
+│ Workspaces #2/#3 — independent worktrees           │
+│ Don't interfere; share the same repo's Actions     │
+└────────────────────────────────────────────────────┘
+```
+
+Subsequent repos: repeat from main-checkout step, once per repo.
+
+---
+
+## 7. Debugging hooks
+
+When a hook fails:
+
+```bash
+# Read the setup output (visible in workspace terminal pane on creation)
+# Look for ✗ ERROR or ⚠ WARN lines
+
+# Manually re-run the launch script (from the worktree):
+bash "$SUPERSET_ROOT_PATH/.claude/plugins/24hour-ClaudeCode/scripts/superset-launch.sh"
+
+# Re-onboard if Actions config drifted:
+cd "$SUPERSET_ROOT_PATH" && bash /24hour-ClaudeCode:setup
+```
+
+If teardown fails and the workspace can't be deleted, Superset offers **Force Delete** which skips teardown. Use this only when the teardown command itself is broken (not when there's a real lock or volume to clean).
+
+---
+
+## 8. Relationship to the 11-step PR flow
+
+The Superset setup hook is **preparation**, not part of the PR flow:
+
+| Superset phase | Role in skill |
 |---|---|
-| 新 workspace setup 报 `✗ scripts/check-actions.sh: No such file` | skill 没装到 repo,或 `.superset/config.json` 路径错。在 repo root 跑 `ls scripts/check-actions.sh` 确认 |
-| setup 报 `gh CLI 未登录` | workspace 终端继承当前 user 的 ~/.config/gh,但若 Superset 跑在容器里可能没继承。在 workspace 终端跑 `gh auth login` |
-| teardown 卡住 | 钩子里某条命令 hang。Force Delete 跳过 |
-| Superset 找不到 `.superset/config.json` | 在 `<repo-root>` 而不是 worktree 里;或被 `~/.superset/projects/<id>/config.json` 覆盖了(去 ~/.superset/projects/ 看) |
-| 想给本人加额外 setup 命令(如设私人 env) | 写到 `.superset/config.local.json`(自动 gitignore) |
+| Setup (workspace creation) | Pre-flight verification — passing means the skill is ready to run |
+| User edits code in Claude Code | The 11-step PR flow runs autonomously (auto-engaged by PostToolUse hook) |
+| Teardown (workspace deletion) | After DoD — skill is done; teardown reminds user to clean the worktree from main |
+
+---
+
+## 9. Troubleshooting
+
+| Symptom | Diagnosis |
+|---|---|
+| Setup says `✗ scripts/check-actions.sh: No such file` | Skill not installed at `.claude/skills/`, or `.superset/config.json` path is wrong. From repo root: `ls .claude/plugins/24hour-ClaudeCode/scripts/check-actions.sh` |
+| Setup says `gh CLI not authenticated` | Workspace terminal inherits user's `~/.config/gh`, but if Superset runs in a container it may not. Run `gh auth login` in the workspace terminal |
+| Teardown hangs | Some command in the hook is hanging. Use Force Delete |
+| Superset can't find `.superset/config.json` | You're inside a worktree, not repo root — or `~/.superset/projects/<id>/config.json` is overriding it |
+| Want to add a personal setup command (e.g. set private env) | Write `.superset/config.local.json` (auto-gitignored) |
