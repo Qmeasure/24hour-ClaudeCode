@@ -1,0 +1,11 @@
+{
+  "name": "24hour-ClaudeCode-marketplace",
+  "owner": {"name": "lesterbot"},
+  "plugins": [
+    {
+      "name": "24hour-ClaudeCode",
+      "source": "./",
+      "description": "Auto-PR loop runtime for git worktrees"
+    }
+  ]
+}

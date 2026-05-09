@@ -1,0 +1,10 @@
+{
+  "name": "24hour-ClaudeCode",
+  "description": "Auto-PR loop runtime: write code in a worktree → auto commit/push/PR → watch Claude Code Action review → adopt feedback → enable auto-merge → babysit until state=MERGED. SessionStart and PostToolUse hooks make it active without any slash command.",
+  "version": "1.0.0",
+  "author": {"name": "lesterbot"},
+  "homepage": "https://github.com/Qmeasure/24hour-ClaudeCode",
+  "repository": "https://github.com/Qmeasure/24hour-ClaudeCode",
+  "license": "MIT",
+  "keywords": ["pull-request", "github-actions", "review-loop", "worktree", "auto-merge"]
+}
