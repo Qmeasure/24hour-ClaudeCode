@@ -79,6 +79,8 @@ claude plugin marketplace add Qmeasure/24hour-ClaudeCode && claude plugin instal
 /plugin install 24hour-ClaudeCode@qmeasure-plugins
 ```
 
+每行各回车一次——slash 命令只能一条一条跑,**不能像 shell 那样用 `&&` 串起来**。
+
 装完后**重启 Claude Code**(`/exit` 退出再 `claude` 进来)以加载 plugin 的 hooks。
 
 ### 第 2 步 —— 跑 setup 向导

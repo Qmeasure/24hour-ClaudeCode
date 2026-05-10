@@ -79,6 +79,8 @@ Run this in your terminal, then `claude plugin list` to confirm `24hour-ClaudeCo
 /plugin install 24hour-ClaudeCode@qmeasure-plugins
 ```
 
+Press Enter after each line — slash commands run one at a time, you can't chain them with `&&`.
+
 After install, **restart Claude Code** (`/exit` then `claude` again) so the plugin's hooks load.
 
 ### Step 2 — Run the setup wizard
