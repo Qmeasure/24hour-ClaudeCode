@@ -68,7 +68,7 @@
 
 ```
 /plugin marketplace add Qmeasure/24hour-ClaudeCode
-/plugin install 24hour-ClaudeCode@24hour-ClaudeCode-marketplace
+/plugin install 24hour-ClaudeCode@qmeasure-plugins
 ```
 
 > **什么是 plugin?** 你可以把它想成 Claude Code 的"App"。装上之后,Claude 就多了一项新能力 —— 这个 plugin 给的能力是"自动开 PR + 合并"。

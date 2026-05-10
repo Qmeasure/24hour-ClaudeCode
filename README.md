@@ -68,7 +68,7 @@ In Claude Code, type:
 
 ```
 /plugin marketplace add Qmeasure/24hour-ClaudeCode
-/plugin install 24hour-ClaudeCode@24hour-ClaudeCode-marketplace
+/plugin install 24hour-ClaudeCode@qmeasure-plugins
 ```
 
 > **What's a plugin?** Think of it as an "app" for Claude Code. Once installed, it adds new behavior to Claude. This one adds the auto-PR superpower.

@@ -35,7 +35,7 @@ Hook 输出格式(参 Claude Code 官方规范):
 ```
 ┌─ 用户在任意项目里运行 ───────────────────────────────────────────────┐
 │  /plugin marketplace add Qmeasure/24hour-ClaudeCode                 │
-│  /plugin install 24hour-ClaudeCode@24hour-ClaudeCode-marketplace    │
+│  /plugin install 24hour-ClaudeCode@qmeasure-plugins                 │
 └─────────────────────────────────────────────────────────────────────┘
                               │
                               ▼
