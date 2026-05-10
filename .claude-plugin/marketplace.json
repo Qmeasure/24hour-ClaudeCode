@@ -1,6 +1,6 @@
 {
   "name": "qmeasure-plugins",
-  "owner": {"name": "lesterbot"},
+  "owner": {"name": "Qmeasure"},
   "plugins": [
     {
       "name": "24hour-ClaudeCode",
