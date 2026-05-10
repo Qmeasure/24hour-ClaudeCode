@@ -134,6 +134,42 @@ Options:
   3. Open a fresh PR with just the focused changes; abandon this one.
 ```
 
+### `stop:preflight_closed`
+
+```
+⚠️ Preflight workflow PR #<N> was closed without merging.
+
+  preflight PR:  <url>
+  parent branch: <branch>
+  reason (if known): <one-line from last-run.json detail>
+
+The preflight PR carried only `.github/workflows/*.yml` changes. It needs to land on the default branch BEFORE the auto-review on the main branch's PR can authenticate (GitHub HTTP 401 workflow-validation policy).
+
+Options:
+  1. Reopen and merge PR #<N> manually: gh pr reopen <N> && gh pr merge <N> --squash
+  2. Bundle workflow + code in one PR (skip the split): set `repair.allow_workflow_in_pr=true` in .claude/24hour-ClaudeCode.config.json. Auto-review will fail on the combined PR; manual review required.
+  3. Revert the workflow changes locally so the loop resumes without them: git checkout origin/<base> -- .github/workflows/<file>
+  4. Likely cause: `claude-code-review` is configured as a *required* branch-protection check. The preflight PR's own auto-review hits the same 401 and never goes green. Make claude-code-review advisory (not required) and reopen.
+```
+
+### `stop:committed_workflow_changes`
+
+```
+⚠️ Workflow file changes are in committed (un-pushed) history; the auto-split can only handle working-tree changes.
+
+  branch:        <branch>
+  files in commits:
+    - .github/workflows/<file>
+
+Resolve manually:
+  git reset HEAD~ -- .github/workflows/    # un-stage workflow files from the last commit
+  git commit --amend --no-edit              # rewrite the commit without them
+
+Then re-trigger the stop hook (e.g., make a trivial edit elsewhere) and the plugin will auto-split the workflow files into a preflight PR.
+
+Override (NOT recommended): set `repair.allow_workflow_in_pr=true` in .claude/24hour-ClaudeCode.config.json to skip the split. The combined PR will get HTTP 401 on auto-review and require manual review.
+```
+
 ### `stop:danger_path`
 
 ```

@@ -58,6 +58,8 @@ Several defensive helpers exist after the security/correctness audit. **Do not r
 
 - **Plugin / marketplace version sync** — `scripts/bump-version.sh` updates both `.claude-plugin/plugin.json` and (when applicable) `.claude-plugin/marketplace.json` atomically. Use `bash scripts/bump-version.sh patch|minor|major|<semver>` or `--check` for drift detection.
 
+- **Workflow auto-split (`scripts/split-workflow-pr.sh` + `stop.sh` Case A 1a–1c + Case E)** — when a PR mixes workflow + code changes, GitHub's workflow-validation policy returns HTTP 401 on the auto-review (the App can't get a token until the workflow file matches the default branch). The plugin auto-detects `.github/workflows/*` in `buckets.workflow`, splits it into a separate "preflight" PR with `gh pr merge --auto --squash` enabled, and parks the rest of the diff in the working tree. State machine adds `mode=waiting_for_preflight_merge` + `state.preflight_pr`. After the preflight merges, `stop.sh` rebases and falls through to normal commit/push. **Critical constraint**: do not configure `claude-code-review` as a *required* branch-protection check, because the preflight PR's own auto-review also hits the 401 and would never auto-merge. The override `repair.allow_workflow_in_pr=true` skips the split (combined PR; manual review required). v1 only handles working-tree workflow changes — already-committed workflow changes return `decision:block` with manual `git reset/amend` instructions (`stop:committed_workflow_changes`).
+
 ## Big-picture architecture (Revision 2 — Stop hook owns the loop)
 
 Three hooks, with strict separation of duties:

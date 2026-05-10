@@ -149,7 +149,7 @@ That's the entire role of `PostToolUse`. No JSON output. No commits. The dirty f
 **Trigger:** Claude finishes the response (turn boundary).
 **Hook:** `Stop` (no matcher; fires every turn end).
 
-This is the workhorse. It is **mode-aware** — `state.json.mode` ∈ {`idle`, `waiting_for_checks`, `ready_for_rework`, `merged`}.
+This is the workhorse. It is **mode-aware** — `state.json.mode` ∈ {`idle`, `waiting_for_preflight_merge`, `waiting_for_checks`, `ready_for_rework`, `merged`}.
 
 ```
 ┌─ Stop hook fires → stop.sh ─────────────────────────────────────────┐
@@ -170,6 +170,23 @@ This is the workhorse. It is **mode-aware** — `state.json.mode` ∈ {`idle`, `
 │  │  ─────────────────────────────────────────────────────────────  ││
 │  │  1. detect-changes.sh — classify files (code / lock / docs /   ││
 │  │       secrets / workflow / danger)                              ││
+│  │     └─ buckets.workflow non-empty AND                           ││
+│  │        repair.allow_workflow_in_pr ≠ true →                     ││
+│  │           1a. Refuse if .github/workflows/* in committed       ││
+│  │               history (return decision:block with manual       ││
+│  │               git-reset instructions; see stop:committed_      ││
+│  │               workflow_changes in failure-escalation).          ││
+│  │           1b. Otherwise call split-workflow-pr.sh:             ││
+│  │                 • Save workflow file content                    ││
+│  │                 • Revert workflow files on the user's branch   ││
+│  │                 • Create preflight/<branch>-workflow-<ts>      ││
+│  │                   from origin/<base>                            ││
+│  │                 • Apply ONLY workflow changes; commit + push   ││
+│  │                 • gh pr create + gh pr merge --auto --squash   ││
+│  │                 • Switch back to user's branch                 ││
+│  │           1c. state.mode = waiting_for_preflight_merge          ││
+│  │               state.preflight_pr = N                            ││
+│  │               Emit "📦 Auto-split into preflight PR #N", exit. ││
 │  │     └─ if any path matches danger_paths → return decision:block││
 │  │        with reason "edit touches sensitive path; need approval" ││
 │  │  2. check-stop-conditions.sh — verify max_iterations, branch   ││
@@ -250,6 +267,20 @@ This is the workhorse. It is **mode-aware** — `state.json.mode` ∈ {`idle`, `
 │  │  Reset state.json: mode="idle", iteration=0, pr_number=null     ││
 │  │  exit 0                                                         ││
 │  │                                                                ││
+│  ├────────────────────────────────────────────────────────────────┤│
+│  │                                                                ││
+│  │  CASE E — mode = waiting_for_preflight_merge                    ││
+│  │           [WORKFLOW-FILE PREFLIGHT IN FLIGHT]                   ││
+│  │  ─────────────────────────────────────────────────────────────  ││
+│  │  gh pr view <preflight_pr> --json state                        ││
+│  │     └─ MERGED → git fetch + git rebase origin/<base>;          ││
+│  │       state.mode = idle, state.preflight_pr = null;            ││
+│  │       FALL THROUGH to Case A (commits remaining diff).         ││
+│  │       Rebase conflict → emit info "resolve manually", exit.    ││
+│  │     └─ OPEN → emit info "still waiting", exit 0.               ││
+│  │     └─ CLOSED-not-merged → emit "stop:preflight_closed",       ││
+│  │       reset to idle, invoke failure-escalation.                ││
+│  │                                                                ││
 │  └────────────────────────────────────────────────────────────────┘│
 │                                                                     │
 │  Always: release <runtime>/lock on exit (via trap)                  │
@@ -257,6 +288,55 @@ This is the workhorse. It is **mode-aware** — `state.json.mode` ∈ {`idle`, `
 │                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## Phase 3.5 — Workflow auto-split (Case A 1a–1c, expanded)
+
+**Why:** GitHub returns HTTP 401 ("Workflow validation failed") when the Claude App tries to authenticate against a PR whose `.github/workflows/*.yml` differs from the default branch. The plugin's auto-review breaks on any PR that mixes workflow + code changes. Solution: split the workflow changes into a separate "preflight" PR that auto-merges first.
+
+```
+┌─ Case A 1b — split-workflow-pr.sh ──────────────────────────────────┐
+│                                                                     │
+│  Inputs (stdin or auto-detected):                                   │
+│    • workflow file paths (from buckets.workflow)                    │
+│                                                                     │
+│  1. Detect base branch via gh repo view --json defaultBranchRef     │
+│  2. Refuse if any workflow file in committed (un-pushed) history    │
+│     (out of v1 scope; user fixes manually via git reset/amend)      │
+│  3. Save current working-tree content of each workflow file to      │
+│     $TMPDIR (one file per path)                                     │
+│  4. On the user's branch: revert each workflow file to              │
+│     origin/<base>'s version (so the diff no longer contains them);  │
+│     untracked workflow files removed entirely                       │
+│  5. Stash any remaining non-workflow changes (so the next checkout  │
+│     doesn't carry them over)                                        │
+│  6. git checkout -b preflight/<branch>-workflow-<timestamp>         │
+│       starting from origin/<base>                                   │
+│  7. Apply saved workflow content to the preflight branch;           │
+│       git add .github/workflows/<paths>; commit                     │
+│  8. git push -u origin <preflight-branch>                           │
+│  9. gh pr create --base <base> --head <preflight-branch>            │
+│       (PR title: "ci: workflow pre-merge for <branch>")             │
+│ 10. gh pr merge --auto --squash <pr_num>                            │
+│ 11. git checkout <user-branch>; git stash pop                        │
+│       (working tree now contains code-only changes)                 │
+│ 12. Output PR number on stdout; exit 0                              │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+                state.mode = waiting_for_preflight_merge
+                state.preflight_pr = N
+                              │
+              (subsequent stops handle Case E above)
+```
+
+**Branch-protection caveat.** Auto-merge on the preflight PR depends on required checks completing. If the user has configured `claude-code-review` as a *required* branch-protection check, the preflight will hang because the auto-review on a workflow-only PR also hits the 401. The plugin documents this in `using-24hour-ClaudeCode/SKILL.md`; users must keep `claude-code-review` advisory.
+
+**Override.** Setting `repair.allow_workflow_in_pr=true` in `.claude/24hour-ClaudeCode.config.json` skips the split; workflow + code go in one PR; auto-review fails; manual review required.
+
+**Out of scope (v1).** Already-committed workflow files are not auto-extracted (would require interactive rebase / `git filter-branch`). The hook returns `decision:block` with manual git-reset instructions.
 
 ---
 

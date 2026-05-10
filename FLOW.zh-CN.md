@@ -149,7 +149,7 @@ Onboard 是幂等的 —— 重复跑 `/24hour-ClaudeCode:setup` 是安全的。
 **触发条件:** Claude 完成响应(回合边界)。
 **Hook:** `Stop`(无 matcher;每个回合结束都触发)。
 
-这是主工作者。它是 **mode-aware** —— `state.json.mode` ∈ {`idle`, `waiting_for_checks`, `ready_for_rework`, `merged`}。
+这是主工作者。它是 **mode-aware** —— `state.json.mode` ∈ {`idle`, `waiting_for_preflight_merge`, `waiting_for_checks`, `ready_for_rework`, `merged`}。
 
 ```
 ┌─ Stop hook 触发 → stop.sh ──────────────────────────────────────────┐
@@ -170,6 +170,22 @@ Onboard 是幂等的 —— 重复跑 `/24hour-ClaudeCode:setup` 是安全的。
 │  │  ─────────────────────────────────────────────────────────────  ││
 │  │  1. detect-changes.sh —— 文件分类(code / lock / docs /         ││
 │  │       secrets / workflow / danger)                              ││
+│  │     └─ buckets.workflow 非空 且                                 ││
+│  │        repair.allow_workflow_in_pr ≠ true →                     ││
+│  │           1a. 若 .github/workflows/* 在 已提交但未 push 的       ││
+│  │               历史中 → 返回 decision:block,要求用户手动         ││
+│  │               git reset/amend(stop:committed_workflow_changes)。 ││
+│  │           1b. 否则调用 split-workflow-pr.sh:                    ││
+│  │                 • 保存 workflow 文件内容                         ││
+│  │                 • 在用户分支上把 workflow 文件还原到 base 版本   ││
+│  │                 • 创建 preflight/<branch>-workflow-<ts>          ││
+│  │                   分支(基于 origin/<base>)                     ││
+│  │                 • 仅应用 workflow 变更;commit + push           ││
+│  │                 • gh pr create + gh pr merge --auto --squash    ││
+│  │                 • 切回用户分支                                   ││
+│  │           1c. state.mode = waiting_for_preflight_merge          ││
+│  │               state.preflight_pr = N                            ││
+│  │               输出 "📦 已自动拆分为 preflight PR #N",exit。     ││
 │  │     └─ 任一路径命中 danger_paths → 返回 decision:block          ││
 │  │        reason = "edit touches sensitive path; need approval"   ││
 │  │  2. check-stop-conditions.sh —— 验证 max_iterations、分支      ││
@@ -250,6 +266,20 @@ Onboard 是幂等的 —— 重复跑 `/24hour-ClaudeCode:setup` 是安全的。
 │  │  重置 state.json:mode="idle",iteration=0,pr_number=null      ││
 │  │  exit 0                                                         ││
 │  │                                                                ││
+│  ├────────────────────────────────────────────────────────────────┤│
+│  │                                                                ││
+│  │  Case E — mode = waiting_for_preflight_merge                    ││
+│  │           [Workflow 文件 preflight PR 进行中]                   ││
+│  │  ─────────────────────────────────────────────────────────────  ││
+│  │  gh pr view <preflight_pr> --json state                        ││
+│  │     └─ MERGED → git fetch + git rebase origin/<base>;          ││
+│  │       state.mode = idle, state.preflight_pr = null;            ││
+│  │       FALL THROUGH 到 Case A(继续提交剩余 diff)。             ││
+│  │       Rebase 冲突 → 输出 "请手动解决",exit。                   ││
+│  │     └─ OPEN → 输出 "仍在等待",exit 0。                         ││
+│  │     └─ CLOSED-not-merged → 输出 stop:preflight_closed,         ││
+│  │       重置为 idle,调用 failure-escalation。                    ││
+│  │                                                                ││
 │  └────────────────────────────────────────────────────────────────┘│
 │                                                                     │
 │  始终(via trap):退出时释放 <runtime>/lock                         │
@@ -257,6 +287,52 @@ Onboard 是幂等的 —— 重复跑 `/24hour-ClaudeCode:setup` 是安全的。
 │                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## Phase 3.5 — Workflow 自动拆分(Case A 1a–1c 详解)
+
+**为什么:** 当 PR 修改了 `.github/workflows/*.yml` 且与 default 分支不同时,GitHub 会以 HTTP 401("Workflow validation failed")拒绝给 Claude App 发 token。这条安全策略防止 PR 通过修改 workflow 文件偷取权限,但也导致**任何混合了 workflow + code 的 PR 自动 review 直接失败**。解决方案:把 workflow 改动拆到一个独立的 "preflight" PR 里,先合入,再让主分支的 PR 继续。
+
+```
+┌─ Case A 1b — split-workflow-pr.sh ──────────────────────────────────┐
+│                                                                     │
+│  输入(stdin 或自动检测):                                          │
+│    • workflow 文件路径列表(来自 buckets.workflow)                 │
+│                                                                     │
+│  1. 通过 gh repo view --json defaultBranchRef 拿到 base 分支        │
+│  2. 若 workflow 文件已在已提交但未 push 的历史里 → 拒绝             │
+│     (v1 范围外;用户手动 git reset/amend 后重试)                   │
+│  3. 把每个 workflow 文件的当前工作区内容保存到 $TMPDIR              │
+│  4. 在用户分支上:把每个 workflow 文件还原成 origin/<base> 的版本   │
+│     (untracked 的 workflow 文件直接删除);diff 中不再含 workflow   │
+│  5. 把剩余的非 workflow 改动 stash 起来                             │
+│  6. git checkout -b preflight/<branch>-workflow-<时间戳>            │
+│       基于 origin/<base>                                            │
+│  7. 把保存的 workflow 内容应用到 preflight 分支;                   │
+│       git add .github/workflows/<paths>;commit                      │
+│  8. git push -u origin <preflight-branch>                           │
+│  9. gh pr create --base <base> --head <preflight-branch>            │
+│       (PR 标题:"ci: workflow pre-merge for <branch>")              │
+│ 10. gh pr merge --auto --squash <pr_num>                            │
+│ 11. git checkout <user-branch>;git stash pop                        │
+│       (工作区只剩非 workflow 改动)                                 │
+│ 12. stdout 输出 PR number;exit 0                                   │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+                state.mode = waiting_for_preflight_merge
+                state.preflight_pr = N
+                              │
+              (后续 Stop 走上面的 Case E)
+```
+
+**分支保护注意事项。** Preflight PR 的 auto-merge 取决于 required check 通过。如果用户把 `claude-code-review` 配成了 *required* 分支保护检查,preflight 会卡住——因为 workflow-only 的 PR 自身的 auto-review 也会撞上 401。**必须**保持 `claude-code-review` 为 advisory(非 required)。文档:`using-24hour-ClaudeCode/SKILL.md`。
+
+**覆盖。** 在 `.claude/24hour-ClaudeCode.config.json` 设 `repair.allow_workflow_in_pr=true` 跳过拆分;workflow + code 一并进同一个 PR;auto-review 失败;需手动 review。
+
+**v1 范围外。** 已提交到历史的 workflow 文件不会自动抽离(需要交互式 rebase / `git filter-branch`)。Hook 返回 `decision:block`,要求用户手动 git reset/amend。
 
 ---
 

@@ -26,7 +26,7 @@ The plugin uses three hooks:
 **Stop is the workhorse.** It's mode-aware via `<runtime>/state.json.mode`:
 
 ```
-state.mode = idle / waiting_for_checks / ready_for_rework / merged
+state.mode = idle / waiting_for_preflight_merge / waiting_for_checks / ready_for_rework / merged
 ```
 
 ```
@@ -66,6 +66,7 @@ The Stop hook emits informational `additionalContext` blocks wrapped in `<24hour
 - **"PR #N (draft) at <url>. CI starting."** → A new commit was just pushed. The next stop will poll. You can stop here, or make more edits if you have related fixes ready.
 - **"PR #N is still running."** → CI hasn't finished. Stop here; it'll be checked next time.
 - **"✅ PR #N merged."** → Done. Cleanup happens on the next stop. End the loop with a brief success message to the user.
+- **"📦 Workflow file changes were auto-split into preflight PR #N."** → You edited a `.github/workflows/*.yml` file. The runtime opened a separate "preflight" PR with just the workflow changes (auto-merge enabled) and held the rest of your diff back. Wait for it to merge — see "When the runtime auto-splits workflow changes" below.
 - **"⛔ STOP condition: ..."** → A hard stop fired. Invoke `failure-escalation` to format an escalation message; do NOT auto-retry.
 
 ## When the hook returns `{"decision":"block","reason":"..."}`
@@ -128,6 +129,37 @@ When the Stop hook reports a fresh commit ("Iteration #N. PR #M (draft) at..."),
 
 These are NOT mandatory in iteration 1's first stop — the hook moves to `waiting_for_checks` immediately. But they should happen before the PR merges. You can do them on the same turn or any subsequent turn before `feedback_good` triggers auto-merge.
 
+## When the runtime auto-splits workflow changes
+
+If your edits include any `.github/workflows/*.yml` file, the Stop hook will automatically:
+
+1. Open a small "preflight" PR (branch name `preflight/<your-branch>-workflow-<timestamp>`) carrying *only* the workflow changes.
+2. Enable auto-merge on it (squash).
+3. Park the rest of your diff in the working tree.
+4. Set `state.mode = waiting_for_preflight_merge` and `state.preflight_pr = N`.
+
+**Why this exists:** GitHub returns HTTP 401 ("Workflow validation failed") when auto-review tries to authenticate against a PR whose `.github/workflows/*.yml` differs from the default branch. That's a security policy — workflow files must already be on the default branch before they can authorize tokens. Bundling workflow + code in one PR breaks the auto-review loop.
+
+**What you should do:**
+
+- The hook will tell you the preflight PR number. **Do not edit aggressively** while waiting — small fixes are fine, but large new features should wait for the preflight to merge.
+- Each subsequent stop polls the preflight PR. On `MERGED`, the hook rebases your branch and falls through to the normal commit/push flow on this same turn.
+- On `OPEN`, the hook just informs you and waits.
+- On `CLOSED-not-merged`, you'll get `⛔ STOP condition: stop:preflight_closed` — invoke `failure-escalation`.
+
+**Branch-protection caveat:** auto-merge on the preflight PR depends on required checks completing. If you've configured `claude-code-review` as a *required* check in branch protection, the preflight will hang because the auto-review on a workflow-only PR also hits the 401. Don't make `claude-code-review` a required check; let it run as advisory.
+
+**Already-committed workflow files:** if your branch's history (not just working tree) already contains a commit that touched `.github/workflows/`, the hook can't auto-split. It returns `decision:block` asking you to:
+
+```bash
+git reset HEAD~ -- .github/workflows/    # un-stage workflow files from the last commit
+git commit --amend --no-edit              # rewrite the commit without them
+```
+
+Then re-trigger the stop and the auto-split runs cleanly.
+
+**Override:** setting `repair.allow_workflow_in_pr=true` in `.claude/24hour-ClaudeCode.config.json` skips the split entirely. Workflow + code go in one PR; auto-review fails; manual review required. Only use this if you have a specific reason.
+
 ## Stop conditions (§Stop Conditions)
 
 Only these reasons authorize the loop to stop. Anything else, you continue.
@@ -141,6 +173,7 @@ Only these reasons authorize the loop to stop. Anything else, you continue.
 7. **Same failure two iterations in a row** (`stop:repeated_failure`) — you're stuck. Escalate.
 8. **`max_iterations` (default 5) hit** — `stop:max_iterations`. Escalate with timeline.
 9. **Diff exceeds `max_diff_lines`** (default 500) — likely runaway repair. Escalate.
+10. **Preflight PR closed without merging** (`stop:preflight_closed`) — the workflow-only auto-split PR was closed by user or required check failed. Escalate; ask user to reopen, override, or revert the workflow changes.
 
 When a stop fires, invoke `failure-escalation` to format the user-facing message. The runtime keeps a complete event timeline in `<runtime>/last-run.json` — cite it.
 
