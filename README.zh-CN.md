@@ -64,14 +64,22 @@
 
 ### 第 1 步 —— 装 plugin
 
-在 Claude Code 里输入:
+**一行命令(shell,推荐):**
+
+```bash
+claude plugin marketplace add Qmeasure/24hour-ClaudeCode && claude plugin install 24hour-ClaudeCode@qmeasure-plugins
+```
+
+在终端里跑这一行,然后 `claude plugin list` 确认 `24hour-ClaudeCode@qmeasure-plugins` 是 `enabled`。
+
+**或者在 Claude Code 里(斜杠命令,两行):**
 
 ```
 /plugin marketplace add Qmeasure/24hour-ClaudeCode
 /plugin install 24hour-ClaudeCode@qmeasure-plugins
 ```
 
-> **什么是 plugin?** 你可以把它想成 Claude Code 的"App"。装上之后,Claude 就多了一项新能力 —— 这个 plugin 给的能力是"自动开 PR + 合并"。
+装完后**重启 Claude Code**(`/exit` 退出再 `claude` 进来)以加载 plugin 的 hooks。
 
 ### 第 2 步 —— 跑 setup 向导
 

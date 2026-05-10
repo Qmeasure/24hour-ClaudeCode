@@ -64,14 +64,22 @@ You only do this once for each project. After setup, the plugin works automatica
 
 ### Step 1 — Install the plugin
 
-In Claude Code, type:
+**One line (shell, recommended):**
+
+```bash
+claude plugin marketplace add Qmeasure/24hour-ClaudeCode && claude plugin install 24hour-ClaudeCode@qmeasure-plugins
+```
+
+Run this in your terminal, then `claude plugin list` to confirm `24hour-ClaudeCode@qmeasure-plugins` is `enabled`.
+
+**Or inside Claude Code (slash commands, two lines):**
 
 ```
 /plugin marketplace add Qmeasure/24hour-ClaudeCode
 /plugin install 24hour-ClaudeCode@qmeasure-plugins
 ```
 
-> **What's a plugin?** Think of it as an "app" for Claude Code. Once installed, it adds new behavior to Claude. This one adds the auto-PR superpower.
+After install, **restart Claude Code** (`/exit` then `claude` again) so the plugin's hooks load.
 
 ### Step 2 — Run the setup wizard
 
