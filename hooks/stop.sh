@@ -68,7 +68,11 @@ record_event() {
     prev_streak=$(jq -r '.fail_streak // 0' "$RUNTIME_DIR/last-run.json" 2>/dev/null || echo 0)
   fi
   local streak
-  if [[ "$status" == failed:* ]] || [[ "$status" == rework* ]]; then
+  # fail_streak counts CONSECUTIVE failures only — rework is the normal happy
+  # path of the loop (review found something, Claude fixed it, push again).
+  # Counting rework here used to break the loop after 2 legitimate review
+  # rounds via check-stop-conditions.sh `fail_streak >= 2 → stop:repeated_failure`.
+  if [[ "$status" == failed:* ]]; then
     streak=$((prev_streak + 1))
   else
     streak=0

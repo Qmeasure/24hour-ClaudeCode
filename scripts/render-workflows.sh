@@ -184,7 +184,7 @@ jobs:
       id-token: write       # OIDC
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 1
 
@@ -271,7 +271,7 @@ jobs:
       id-token: write       # OIDC
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0    # full history for blame/log
 
@@ -371,7 +371,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
 $setup_block
 

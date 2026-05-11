@@ -44,12 +44,20 @@ max_iterations=5
 
 # ---- 3. Extract failure signals ----
 
-# 3a. Failed checks (case-insensitive match against failure/cancelled/timed_out)
-failed_checks=$(jq '[.checks[]? | select((.conclusion // "" | ascii_downcase) | IN("failure","cancelled","timed_out","action_required","stale")) | .name]' "$FEEDBACK_FILE" 2>/dev/null || echo "[]")
+# 3a. Failed checks — strict code-side failure only.
+# `action_required` and `stale` are intentionally NOT here:
+#   - action_required typically means "needs human approval / manual review" — not a
+#     code failure. Treating it as a failure forces rework on PRs that just need a
+#     reviewer click.
+#   - stale typically means "no resolution in time" — likely an external/orchestration
+#     issue, also not a code-side failure.
+# Both are surfaced via the inconclusive bucket below (3b) instead.
+failed_checks=$(jq '[.checks[]? | select((.conclusion // "" | ascii_downcase) | IN("failure","cancelled","timed_out")) | .name]' "$FEEDBACK_FILE" 2>/dev/null || echo "[]")
 failed_count=$(echo "$failed_checks" | jq 'length')
 
-# 3b. Pending checks (still running) — empty conclusion or "pending"
-pending_checks=$(jq '[.checks[]? | select((.conclusion // "" | ascii_downcase) | IN("","pending","queued","in_progress")) | .name]' "$FEEDBACK_FILE" 2>/dev/null || echo "[]")
+# 3b. Pending checks (still running) + non-failure-needing-attention states.
+# action_required / stale are here, not in failed: they need attention but not code rework.
+pending_checks=$(jq '[.checks[]? | select((.conclusion // "" | ascii_downcase) | IN("","pending","queued","in_progress","action_required","stale")) | .name]' "$FEEDBACK_FILE" 2>/dev/null || echo "[]")
 pending_count=$(echo "$pending_checks" | jq 'length')
 
 # 3c. CHANGES_REQUESTED reviews

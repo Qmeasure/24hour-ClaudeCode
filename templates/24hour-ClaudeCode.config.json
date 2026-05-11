@@ -21,7 +21,6 @@
     "enabled": true,
     "max_iterations": 5,
     "stop_on_repeated_failure": true,
-    "debounce_seconds": 3,
     "allow_workflow_in_pr": false
   },
 

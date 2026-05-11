@@ -44,8 +44,11 @@ if [[ -z "$files" ]]; then
   exit 0
 fi
 
-# Default danger paths (used if config missing)
-default_danger='["migrations/**","db/migrations/**","alembic/versions/**","prisma/migrations/**","prisma/schema.prisma","infra/**","terraform/**","k8s/**","helm/**",".env.production","**/secrets/**","**/credentials/**"]'
+# Default danger paths — must match templates/24hour-ClaudeCode.config.json
+# `danger_paths` exactly. This list is the fallback when the user has no
+# config file present (e.g. before /24hour-ClaudeCode:setup has run); the
+# template's value takes over after setup.
+default_danger='["migrations/**","db/migrations/**","alembic/versions/**","prisma/migrations/**","prisma/schema.prisma","infra/**","terraform/**","k8s/**","helm/**",".env.production",".env.staging","**/secrets/**","**/credentials/**"]'
 
 if [[ -f "$CONFIG_FILE" ]]; then
   danger_globs=$(jq -c '.danger_paths // '"$default_danger" "$CONFIG_FILE")
@@ -72,12 +75,42 @@ classify() {
   esac
 }
 
-# Glob match — bash extglob + path = glob substring
+# Glob → regex translator. Pure bash (no sed) to avoid BSD-sed character-class
+# parser quirks. Algorithm:
+#   1. Stash glob wildcards (** and *) as private control chars so they survive
+#      the metacharacter escape pass.
+#   2. Escape every regex metacharacter that could appear literally in a path.
+#   3. Restore the wildcards as `.*` and `[^/]*` respectively.
+# Previously a sed-based version didn't escape ?, [, ], {, }, + — a glob like
+# `src/[id].tsx` (Next.js dynamic-route style) failed silently because the
+# brackets were interpreted as a regex character class.
+glob_to_regex() {
+  local pattern="$1"
+  pattern="${pattern//\*\*/$'\x01'}"   # stash ** as \x01
+  pattern="${pattern//\*/$'\x02'}"     # stash *  as \x02
+  pattern="${pattern//\\/\\\\}"        # escape backslash FIRST
+  pattern="${pattern//./\\.}"
+  pattern="${pattern//\?/\\?}"
+  pattern="${pattern//+/\\+}"
+  pattern="${pattern//(/\\(}"
+  pattern="${pattern//)/\\)}"
+  pattern="${pattern//\{/\\\{}"
+  pattern="${pattern//\}/\\\}}"
+  pattern="${pattern//\[/\\[}"
+  pattern="${pattern//\]/\\]}"
+  pattern="${pattern//\^/\\^}"
+  pattern="${pattern//\$/\\$}"
+  pattern="${pattern//\|/\\|}"
+  pattern="${pattern//$'\x01'/.*}"     # ** → .*
+  pattern="${pattern//$'\x02'/[^\/]*}" # *  → [^/]*
+  printf '%s' "$pattern"
+}
+
 match_danger() {
   local path="$1"
   echo "$danger_globs" | jq -r '.[]' | while read -r glob; do
-    # Convert ** to .* and * to [^/]* for regex match
-    pattern=$(printf '%s' "$glob" | sed -e 's/\./\\./g' -e 's/\*\*/§§§§/g' -e 's/\*/[^\/]*/g' -e 's/§§§§/.*/g')
+    local pattern
+    pattern=$(glob_to_regex "$glob")
     if [[ "$path" =~ ^${pattern}$ ]]; then
       echo "$path"
       return 0
