@@ -58,52 +58,68 @@
 
 ---
 
-## 快速开始(一次配好,大约 10 分钟)
+## 快速开始
 
-每个项目只需要配一次。配好之后,plugin 永远自动工作。
+整个流程**就 3 步**,每台机器一次 + 每个 repo 一次。配好以后,你每开发一个 feature,只要 `git worktree add` 一下,后面 PR 全自动跑完。
 
-### 第 1 步 —— 装 plugin
+```
+第 1 步(每台机器一次)→ 安装 plugin            ─┐
+                                                 │
+第 2 步(每个 repo 一次)→ 在 main 分支 onboard │ ← 配置必须先落到 main
+                                                 │    workflow YAML 必须
+第 3 步(每个 feature) → 开 worktree            │    在默认分支才有效
+                          改代码 → 自动 PR     ─┘
+```
 
-**一行命令(shell,推荐):**
+### 第 1 步 —— 安装 plugin(一次性,全局)
 
 ```bash
-claude plugin marketplace add Qmeasure/24hour-ClaudeCode && claude plugin install 24hour-ClaudeCode@24hour-ClaudeCode
+# 确保 gh CLI 有 workflow scope(后面要 push .github/workflows/*.yml 才能过)
+gh auth login --scopes workflow
+
+# Plugin 装一次,自动对这台机器上所有 repo 生效
+claude plugin marketplace add Qmeasure/24hour-ClaudeCode
+claude plugin install 24hour-ClaudeCode@24hour-ClaudeCode
 ```
 
-在终端里跑这一行,然后 `claude plugin list` 确认 `24hour-ClaudeCode@24hour-ClaudeCode` 是 `enabled`。
+确认:`claude plugin list` 看到 `24hour-ClaudeCode@24hour-ClaudeCode` 是 `enabled`。
 
-**或者在 Claude Code 里(斜杠命令,两行):**
+装完**重启 Claude Code**(`/exit` 退出再 `claude` 进来),让 plugin 的 hook 加载进来。
 
+> **为什么是"全局"?** Plugin 代码装在 `~/.claude/plugins/...`,但激活是按项目自动判断的。你不需要每个 repo 都装一次。
+
+### 第 2 步 —— Onboard 你的 repo(每个 repo 一次,**在 main 分支跑**)
+
+> ⚠️ **必须在 main 主 checkout 跑 setup,不能在 worktree 里跑。** setup 会把 workflow YAML(`.github/workflows/claude*.yml`)commit 到默认分支 —— GitHub Actions 只有在 workflow 已经在默认分支上时才能给它授信,所以必须先落到 main。如果你在 worktree 里跑 setup,plugin 会提示你切回 main。
+
+```bash
+cd ~/your-repo
+git checkout main            # 确保在 main,不要在 feature 分支
+claude                       # 开 Claude Code session
 ```
-/plugin marketplace add Qmeasure/24hour-ClaudeCode
-/plugin install 24hour-ClaudeCode@24hour-ClaudeCode
-```
 
-每行各回车一次——slash 命令只能一条一条跑,**不能像 shell 那样用 `&&` 串起来**。
-
-装完后**重启 Claude Code**(`/exit` 退出再 `claude` 进来)以加载 plugin 的 hooks。
-
-### 第 2 步 —— 跑 setup 向导
+Session 打开后,plugin 会自动检测到"onboarding 没完成"并提示你。然后跑:
 
 ```
 /24hour-ClaudeCode:setup
 ```
 
-向导帮你搞定剩下的一切:
+向导帮你搞定剩下的一切,每一步都问你确认,**没你点头不会动手**:
 
-1. 检查基础工具(`git`、`gh`、`claude`)是否装好且已登录
-2. 在浏览器里打开 GitHub,引导你把 Claude 审核机器人装到你的 repo
-3. 用你的 Claude 订阅生成一个 API token,自动写到 GitHub secret 里(这个 token 是审核机器人调用 Claude 用的)
-4. 读你的项目,自动识别用什么 test/lint 命令
+1. 验证 `git`、`gh`、`claude` CLI 都装好且已登录(且 `workflow` scope 已有)
+2. 浏览器打开 GitHub → 你把 Claude 审核机器人装到这个 repo
+3. 用你的 Claude 订阅生成 OAuth token → 写入 GitHub 的 `CLAUDE_CODE_OAUTH_TOKEN` secret
+4. 读你的项目,自动识别 test / lint / build 命令
 5. 问你:"用哪个 AI 来审 PR?Claude / OpenAI Codex / 两个都要?"
-6. 按你项目的特点生成相应的配置文件
-7. 在 push 之前给你看一遍计划 —— **你确认了之后**才会真的提交到 GitHub
+6. 按你项目的特点生成 workflow YAML → **commit 并 push 到 main**
+7. 写入 `.claude/24hour-ClaudeCode.config.json`(你的本地可调参数)
+8. 跑健康检查,确认一切就绪
 
-向导每一步都用大白话告诉你它要做什么。**没你点头不会动手。**
+**然后在 GitHub 上手动开一项配置**:Settings → General → ☑️ **Allow auto-merge**(没开的话,PR 永远不会在 CI 通过后自动合)。
 
-### 第 3 步 —— 开干
+✅ 这个 repo 从此**不再需要重新 setup**。后续你开的每个 worktree 都会自动继承这套配置。
 
-新建一个 worktree 来做你的任务:
+### 第 3 步 —— 开一个 feature(每个 feature 一次,在 worktree 里干)
 
 ```bash
 git worktree add ../my-feature -b feat/my-feature
@@ -111,11 +127,17 @@ cd ../my-feature
 claude
 ```
 
-进去之后让 Claude 干活就行,plugin 接管剩下的事。
+Plugin 自动检测:✓ 在 worktree 里、✓ main 已 onboard → **当前 worktree 的运行时已激活**。不需要重跑 setup。
 
-> **什么是 worktree?** 它是 git 的一个特性,让你在同一时间为同一个项目创建多个独立工作目录,每个目录有自己的分支。
->
-> Plugin **只在 worktree 里激活**。所以你在主目录里照常用 Claude Code,plugin 不会跳出来干预。
+接下来,让 Claude 干活,plugin 全自动接管:
+
+- 每次代码改动触发自动 commit 流水线(commit → push → draft PR)
+- PR 自动进入 review(Claude 或 Codex,看你之前选的)
+- 如果 review 或 CI 失败,plugin 把具体反馈喂给 Claude,Claude 自动改 —— 最多重试 5 轮
+- 全绿了,plugin 开启 auto-merge,等 PR 合并
+- 完事。从你的"在报表页加个 CSV 导出"到"PR 已合并",整个过程不用敲 `git`,不用点 "merge"。
+
+> **为什么用 worktree?** 它给每个分支一个独立目录,所以 plugin 只在专门的 feature 目录里自动 commit —— 你的主目录始终保持干净、完全手动。Plugin **只在 worktree 里激活**,在主目录里完全静默。
 
 ---
 

@@ -58,52 +58,68 @@ You never typed `git commit`, `gh pr create`, or clicked "merge". The plugin han
 
 ---
 
-## Quick start (about 10 minutes, only once per project)
+## Quick start
 
-You only do this once for each project. After setup, the plugin works automatically forever.
+The flow is **3 steps**, done once per machine + once per repo. After that, every feature you ship is one `git worktree add` away from a fully automated PR.
 
-### Step 1 — Install the plugin
+```
+Step 1 (once per machine)  → install plugin  ─┐
+                                              │
+Step 2 (once per repo)     → onboard ON MAIN  │  ← config lives on main
+                                              │     workflow YAMLs need
+Step 3 (per feature)       → open a worktree  │     to be on default branch
+                              code → auto PR ─┘
+```
 
-**One line (shell, recommended):**
+### Step 1 — Install the plugin (one-time, global)
 
 ```bash
-claude plugin marketplace add Qmeasure/24hour-ClaudeCode && claude plugin install 24hour-ClaudeCode@24hour-ClaudeCode
+# Make sure gh CLI has workflow scope (required to push .github/workflows/*.yml later)
+gh auth login --scopes workflow
+
+# Install the plugin once — it auto-applies to every repo on this machine
+claude plugin marketplace add Qmeasure/24hour-ClaudeCode
+claude plugin install 24hour-ClaudeCode@24hour-ClaudeCode
 ```
 
-Run this in your terminal, then `claude plugin list` to confirm `24hour-ClaudeCode@24hour-ClaudeCode` is `enabled`.
-
-**Or inside Claude Code (slash commands, two lines):**
-
-```
-/plugin marketplace add Qmeasure/24hour-ClaudeCode
-/plugin install 24hour-ClaudeCode@24hour-ClaudeCode
-```
-
-Press Enter after each line — slash commands run one at a time, you can't chain them with `&&`.
+Confirm: `claude plugin list` should show `24hour-ClaudeCode@24hour-ClaudeCode` as `enabled`.
 
 After install, **restart Claude Code** (`/exit` then `claude` again) so the plugin's hooks load.
 
-### Step 2 — Run the setup wizard
+> **Why "global"?** Plugin code installs to `~/.claude/plugins/...`, but it activates per-project automatically. You don't reinstall for each new repo.
+
+### Step 2 — Onboard your repo (once per repo, **on the main branch**)
+
+> ⚠️ **Run setup from the main checkout, not from a worktree.** Setup commits workflow YAMLs (`.github/workflows/claude*.yml`) — GitHub Actions can only authorize them when they're on the **default branch**, so they must land on main first. If you try to run setup inside a worktree, the plugin will tell you to switch.
+
+```bash
+cd ~/your-repo
+git checkout main            # be on main, not a feature branch
+claude                       # open Claude Code session
+```
+
+When the session opens, the plugin auto-detects that onboarding is incomplete and prompts you. Run:
 
 ```
 /24hour-ClaudeCode:setup
 ```
 
-The wizard does the rest. It will:
+The wizard does the rest. Each step asks for confirmation; **nothing happens without your OK**:
 
-1. Check that the basic tools (`git`, `gh`, `claude`) are installed and signed in
-2. Open GitHub in your browser to install the Claude review bot on your repo
-3. Generate an API token from your Claude subscription and save it as a GitHub secret (this is what lets the auto-review bot run)
-4. Read your project to detect what test/lint commands you use
+1. Verify `git`, `gh`, `claude` CLIs are installed and signed in (with `workflow` scope)
+2. Open GitHub in your browser → you install the Claude review bot on this repo
+3. Generate an OAuth token from your Claude subscription → save it as the `CLAUDE_CODE_OAUTH_TOKEN` GitHub secret
+4. Read your project to detect test / lint / build commands
 5. Ask: "Which AI should review your PRs? Claude / OpenAI Codex / both?"
-6. Generate the right config files for your project type
-7. Show you the plan before pushing — you confirm before anything goes live
+6. Generate workflow YAMLs tailored to your stack → **commit + push to main**
+7. Seed `.claude/24hour-ClaudeCode.config.json` (your local knobs)
+8. Run a health check to confirm everything is wired
 
-The wizard explains every step in plain English. **Nothing happens without your OK.**
+**Then one manual step on GitHub:** Settings → General → ☑️ **Allow auto-merge** (or pull requests won't auto-merge after CI passes).
 
-### Step 3 — Start working
+✅ Once done, this repo never needs setup again — every worktree you create from now on inherits the config automatically.
 
-Open a worktree for your task:
+### Step 3 — Ship a feature (per feature, in a worktree)
 
 ```bash
 git worktree add ../my-feature -b feat/my-feature
@@ -111,11 +127,17 @@ cd ../my-feature
 claude
 ```
 
-Now ask Claude to do something. The plugin takes over from there.
+The plugin auto-detects: ✓ in worktree, ✓ main is onboarded → **runtime is now ACTIVE in this worktree**. No setup needed.
 
-> **What's a worktree?** It's a way to have multiple "checkouts" of the same project at the same time. Each worktree is a separate folder with its own branch.
->
-> The plugin **only activates inside worktrees**, so you can keep using Claude Code normally in your main folder without any of this firing.
+Tell Claude what to do. The plugin takes over:
+
+- Every code edit triggers an auto-commit pipeline (commit → push → draft PR)
+- The PR gets reviewed automatically (Claude or Codex, whichever you chose)
+- If the review or CI fails, the plugin shows Claude the specific feedback and Claude fixes it — up to 5 retry rounds
+- When everything is green, the plugin enables auto-merge and waits for the PR to merge
+- Done. The whole cycle from your "add CSV export to reports" to "PR merged" runs without you typing `git` or clicking "merge".
+
+> **Why a worktree?** It's a separate folder for each branch, so the plugin only ever auto-commits in dedicated feature dirs — your main checkout stays clean and manual. The plugin **only activates inside worktrees**; it's silent in your main folder.
 
 ---
 

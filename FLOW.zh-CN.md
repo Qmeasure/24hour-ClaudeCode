@@ -87,7 +87,13 @@ Onboard 是幂等的 —— 重复跑 `/24hour-ClaudeCode:setup` 是安全的。
 ```
 ┌─ SessionStart hook 触发 → bootstrap.sh ─────────────────────────────┐
 │                                                                     │
-│  读取 .claude/24hour-ClaudeCode.config.json                         │
+│  通过 scripts/resolve-config-path.sh 解析有效的 config 路径:         │
+│  ├─ <worktree>/.claude/24hour-ClaudeCode.config.json 存在? 用它    │
+│  └─ 否则若在 worktree 内 → 回退到 main checkout 的 config            │
+│     (用 `git worktree list --porcelain` 定位 main)。这是新 worktree │
+│     自动继承 main onboarding 配置的核心机制,无需重新 onboard。      │
+│                                                                     │
+│  读取解析后的 config:                                                │
 │  ├─ enabled=false → 输出 "disabled" 提示,exit 0                     │
 │  └─ enabled=true → 继续                                             │
 │                                                                     │
@@ -96,15 +102,19 @@ Onboard 是幂等的 —— 重复跑 `/24hour-ClaudeCode:setup` 是安全的。
 │  ├─ 是否在受保护分支?(main / master / develop / staging / ...)     │
 │  ├─ gh 是否已登录?                                                  │
 │  ├─ Claude Code Actions 是否已部署?(.github/workflows/claude*.yml) │
-│  └─ 配置是否存在?(.claude/24hour-ClaudeCode.config.json)            │
+│  └─ config 是否存在?(走上面解析路径——main 有就算 TRUE)             │
 │                                                                     │
-│  按探测结果分支:                                                    │
+│  按探测结果分支(顺序很关键—— onboarding 检测在 dormant 之前):      │
+│  ├─ Onboarding 不完整 → 注入 github-actions-onboarding skill        │
+│  │     附带情景化位置提示:                                          │
+│  │       • 在 main 上:"在这里跑 /24hour-ClaudeCode:setup"           │
+│  │       • 在 worktree 里:"回 main checkout 跑 setup"               │
+│  │     用 <EXTREMELY-IMPORTANT> 包裹                                │
 │  ├─ 不在 worktree → 输出 "dormant" 提示(一行),exit 0              │
 │  ├─ 受保护分支 → 输出 "dormant" 提示(一行),exit 0                 │
-│  ├─ Onboarding 不完整 → 注入 github-actions-onboarding skill        │
-│  │                       用 <EXTREMELY-IMPORTANT> 包裹              │
-│  └─ 健康 → 注入 using-24hour-ClaudeCode/SKILL.md(运行时契约)       │
-│            用 <EXTREMELY-IMPORTANT> 包裹                            │
+│  └─ 健康(在 worktree 内 + 已 onboard)→ 注入                       │
+│     using-24hour-ClaudeCode/SKILL.md(运行时契约)                   │
+│     用 <EXTREMELY-IMPORTANT> 包裹                                   │
 │                                                                     │
 │  若 <runtime>/state.json 不存在,初始化为 mode="idle"。              │
 │  写 <runtime>/.gitignore 内容为 `*`,确保 runtime 文件永不进入 diff。│

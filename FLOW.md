@@ -87,7 +87,13 @@ Onboarding is idempotent — re-running `/24hour-ClaudeCode:setup` is safe.
 ```
 ┌─ SessionStart hook fires → bootstrap.sh ────────────────────────────┐
 │                                                                     │
-│  Read .claude/24hour-ClaudeCode.config.json                         │
+│  Resolve effective config path via scripts/resolve-config-path.sh:  │
+│  ├─ <worktree>/.claude/24hour-ClaudeCode.config.json exists? use it │
+│  └─ Else if in worktree → fall back to main checkout's config      │
+│     (found via `git worktree list --porcelain`). This is how a      │
+│     fresh worktree inherits main's onboarded config without redo.   │
+│                                                                     │
+│  Read the resolved config:                                          │
 │  ├─ enabled=false → emit "disabled" note, exit 0                    │
 │  └─ enabled=true → continue                                         │
 │                                                                     │
@@ -96,15 +102,19 @@ Onboarding is idempotent — re-running `/24hour-ClaudeCode:setup` is safe.
 │  ├─ on protected branch? (main / master / develop / staging / ...) │
 │  ├─ gh authenticated?                                               │
 │  ├─ Claude Code Actions deployed? (.github/workflows/claude*.yml)   │
-│  └─ config present? (.claude/24hour-ClaudeCode.config.json)         │
+│  └─ config present? (via resolved path above — TRUE if main has it) │
 │                                                                     │
-│  Branch on detection:                                               │
+│  Branch on detection (ORDER MATTERS — onboarding before dormant):   │
+│  ├─ Onboarding incomplete → inject github-actions-onboarding skill  │
+│  │     with context-aware location hint:                            │
+│  │       • on main: "run /24hour-ClaudeCode:setup here"             │
+│  │       • in worktree: "switch to main checkout to setup"          │
+│  │     wrapped in <EXTREMELY-IMPORTANT>                             │
 │  ├─ Not in worktree → emit "dormant" note (one line), exit 0        │
 │  ├─ Protected branch → emit "dormant" note (one line), exit 0       │
-│  ├─ Onboarding incomplete → inject github-actions-onboarding skill  │
-│  │                          wrapped in <EXTREMELY-IMPORTANT>        │
-│  └─ Healthy → inject using-24hour-ClaudeCode/SKILL.md (the runtime  │
-│              contract) wrapped in <EXTREMELY-IMPORTANT>             │
+│  └─ Healthy (in worktree + onboarded) → inject                      │
+│     using-24hour-ClaudeCode/SKILL.md (the runtime contract)         │
+│     wrapped in <EXTREMELY-IMPORTANT>                                │
 │                                                                     │
 │  Initialize <runtime>/state.json with mode="idle" if absent.        │
 │  Write <runtime>/.gitignore with `*` so runtime files never leak.   │
