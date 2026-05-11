@@ -1,0 +1,44 @@
+{
+  "_comment": "Project-level config for 24hour-ClaudeCode plugin. Installed by /24hour-ClaudeCode:setup. Edit by hand or via the enable/disable commands. Schema: enabled (bool, master switch), github (auto-PR settings), checks (local verify before auto-commit), repair (loop discipline), danger_paths (paths refused for auto-commit). Null values mean auto-detect at runtime.",
+
+  "enabled": true,
+
+  "github": {
+    "auto_create_pr": true,
+    "auto_push": true,
+    "open_as_draft": true,
+    "base_branch": null,
+    "branch_prefix": "auto/",
+    "request_review": false
+  },
+
+  "checks": {
+    "run_local_tests": true,
+    "commands": []
+  },
+
+  "repair": {
+    "enabled": true,
+    "max_iterations": 5,
+    "stop_on_repeated_failure": true,
+    "debounce_seconds": 3,
+    "max_diff_lines": 500,
+    "allow_workflow_in_pr": false
+  },
+
+  "danger_paths": [
+    "migrations/**",
+    "db/migrations/**",
+    "alembic/versions/**",
+    "prisma/migrations/**",
+    "prisma/schema.prisma",
+    "infra/**",
+    "terraform/**",
+    "k8s/**",
+    "helm/**",
+    ".env.production",
+    ".env.staging",
+    "**/secrets/**",
+    "**/credentials/**"
+  ]
+}
