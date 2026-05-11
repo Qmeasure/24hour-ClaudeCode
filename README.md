@@ -60,24 +60,36 @@ You never typed `git commit`, `gh pr create`, or clicked "merge". The plugin han
 
 ## Quick start
 
-The flow is **3 steps**, done once per machine + once per repo. After that, every feature you ship is one `git worktree add` away from a fully automated PR.
+The flow is **3 steps**: once per machine, once per repo, once per feature. After that, every feature you ship is one `git worktree add` away from a fully automated PR.
 
 ```
-Step 1 (once per machine)  → install plugin  ─┐
-                                              │
-Step 2 (once per repo)     → onboard ON MAIN  │  ← config lives on main
-                                              │     workflow YAMLs need
-Step 3 (per feature)       → open a worktree  │     to be on default branch
-                              code → auto PR ─┘
+Step 1 (once per machine)  → install plugin   ─┐  in any terminal
+                                               │
+Step 2 (once per repo)     → onboard           │  in your project's MAIN folder
+                              ↓                │  (the original git checkout)
+                              setup wizard     │  on the main branch
+                                               │
+Step 3 (per feature)       → open a worktree   │  in a NEW folder next to your project
+                              code → auto PR  ─┘  (sibling dir)
 ```
 
-### Step 1 — Install the plugin (one-time, global)
+### Before you start — make sure you have these
+
+| Thing | How to check | If missing |
+|---|---|---|
+| Claude Code CLI installed | `claude --version` | Install from [code.claude.com/docs](https://code.claude.com/docs/) |
+| GitHub CLI installed + logged in | `gh auth status` | `gh auth login --scopes workflow` |
+| Git identity configured | `git config --global user.name` | `git config --global user.name "..."` + `user.email` |
+| **A folder for your project** | You know its full path, e.g. `~/Projects/my-app` | Pick or create one before continuing |
+| **Either an existing GitHub repo, OR ready to make a new one** | `gh repo view` works inside the folder | The setup wizard will offer to create it for you |
+
+### Step 1 — Install the plugin (one-time, global, run anywhere)
+
+You can be in any terminal, any folder. The plugin installs into your home dir and applies to every project on this machine.
 
 ```bash
-# Make sure gh CLI has workflow scope (required to push .github/workflows/*.yml later)
-gh auth login --scopes workflow
-
-# Install the plugin once — it auto-applies to every repo on this machine
+# In any terminal:
+gh auth login --scopes workflow         # make sure gh has workflow scope
 claude plugin marketplace add Qmeasure/24hour-ClaudeCode
 claude plugin install 24hour-ClaudeCode@24hour-ClaudeCode
 ```
@@ -86,58 +98,93 @@ Confirm: `claude plugin list` should show `24hour-ClaudeCode@24hour-ClaudeCode` 
 
 After install, **restart Claude Code** (`/exit` then `claude` again) so the plugin's hooks load.
 
-> **Why "global"?** Plugin code installs to `~/.claude/plugins/...`, but it activates per-project automatically. You don't reinstall for each new repo.
+> Plugin code lives at `~/.claude/plugins/...`. You install it once, not per-project.
 
-### Step 2 — Onboard your repo (once per repo, **on the main branch**)
+### Step 2 — Onboard your repo (once per repo, **in your project's main folder**)
 
-> ⚠️ **Run setup from the main checkout, not from a worktree.** Setup commits workflow YAMLs (`.github/workflows/claude*.yml`) — GitHub Actions can only authorize them when they're on the **default branch**, so they must land on main first. If you try to run setup inside a worktree, the plugin will tell you to switch.
+> 📍 **Where to run this:** open a terminal *inside your project's main folder* — the original folder where your `.git` directory lives. Not a worktree, not somewhere else.
+>
+> Example:
+> ```bash
+> cd ~/Projects/my-app    # ← your actual project path
+> pwd                     # confirm you're in the right place
+> ls .git                 # this should exist (or you'll create it via the wizard)
+> ```
+
+> ⚠️ **Why "main folder" matters:** the setup commits `.github/workflows/claude*.yml` to your repo. GitHub Actions can only authorize them when they're on the **default branch**, so they must land on `main` first. If you run setup from a worktree, the plugin will tell you to switch back to the main folder.
+
+Make sure you're on the main branch (or whichever branch is your repo's default):
 
 ```bash
-cd ~/your-repo
-git checkout main            # be on main, not a feature branch
-claude                       # open Claude Code session
+git checkout main         # or: git checkout master / git checkout default branch name
 ```
 
-When the session opens, the plugin auto-detects that onboarding is incomplete and prompts you. Run:
+Then open a Claude Code session in this folder and run the setup command:
+
+```bash
+claude
+```
 
 ```
 /24hour-ClaudeCode:setup
 ```
 
-The wizard does the rest. Each step asks for confirmation; **nothing happens without your OK**:
+The wizard does the rest. **Every step asks for confirmation; nothing happens without your OK.** The flow:
 
-1. Verify `git`, `gh`, `claude` CLIs are installed and signed in (with `workflow` scope)
-2. Open GitHub in your browser → you install the Claude review bot on this repo
-3. Generate an OAuth token from your Claude subscription → save it as the `CLAUDE_CODE_OAUTH_TOKEN` GitHub secret
-4. Read your project to detect test / lint / build commands
-5. Ask: "Which AI should review your PRs? Claude / OpenAI Codex / both?"
-6. Generate workflow YAMLs tailored to your stack → **commit + push to main**
-7. Seed `.claude/24hour-ClaudeCode.config.json` (your local knobs)
-8. Run a health check to confirm everything is wired
+1. **Verify prerequisites** — `git`, `gh`, `claude` CLIs installed, gh has `workflow` scope, git identity configured.
+2. **Locate your repo** — three sub-cases:
+   - ✅ You already have a GitHub repo connected → continues automatically.
+   - ⚠️ Local git repo but **no GitHub remote** → wizard offers to run `gh repo create` for you (it'll ask name / public-or-private / push). Pick "yes" to create + push in one go.
+   - ⚠️ Folder isn't even a git repo yet → wizard offers `git init -b main` + initial commit. You'll need files to commit (a README is enough).
+3. **Install the Claude review bot** — browser opens to https://github.com/apps/claude. You click "Install" and pick this repo.
+4. **Generate an OAuth token** from your Claude subscription, save it as `CLAUDE_CODE_OAUTH_TOKEN` in your GitHub repo's secrets.
+5. **Auto-detect** your test / lint / build commands.
+6. **Ask** which AI reviews PRs: Claude / OpenAI Codex / both.
+7. **Generate workflow YAMLs** tailored to your stack → commit + push to `main`.
+8. **Seed** `.claude/24hour-ClaudeCode.config.json` (your local knobs).
+9. **Health check** — confirms all wiring.
 
-**Then one manual step on GitHub:** Settings → General → ☑️ **Allow auto-merge** (or pull requests won't auto-merge after CI passes).
+After the wizard finishes, **do one thing on the GitHub website**: open your repo → Settings → General → ☑️ **Allow auto-merge**. Without this, PRs won't merge automatically after CI passes.
 
-✅ Once done, this repo never needs setup again — every worktree you create from now on inherits the config automatically.
+✅ **One-time only.** This repo is done. Every worktree you create from this repo inherits the config automatically — you never re-run setup.
 
-### Step 3 — Ship a feature (per feature, in a worktree)
+### Step 3 — Ship a feature (per feature, in a worktree **next to** your project)
+
+> 📍 **Where to run this:** still in your project's main folder for the `worktree add` command. The new worktree will be created as a **sibling folder**, then you `cd` into it and start a fresh Claude session.
 
 ```bash
+# Still in ~/Projects/my-app (your main folder):
 git worktree add ../my-feature -b feat/my-feature
-cd ../my-feature
-claude
+#                ↑ creates ~/Projects/my-feature, on a new branch
+
+cd ../my-feature      # move into the worktree folder
+claude                # ← start a NEW Claude session here (don't reuse the one from main)
 ```
 
-The plugin auto-detects: ✓ in worktree, ✓ main is onboarded → **runtime is now ACTIVE in this worktree**. No setup needed.
+> 🔑 **Critical:** you must start a **new** Claude Code session inside the worktree folder. SessionStart hooks only fire once per session, so the runtime only activates when Claude starts up in the worktree dir. (If you `cd` into the worktree from an existing session, the runtime won't engage.)
+
+When Claude opens in `../my-feature`, the plugin auto-detects:
+- ✓ inside a worktree
+- ✓ main is onboarded (config inherited automatically)
+- → **runtime is now ACTIVE in this worktree**. No setup needed.
 
 Tell Claude what to do. The plugin takes over:
 
 - Every code edit triggers an auto-commit pipeline (commit → push → draft PR)
 - The PR gets reviewed automatically (Claude or Codex, whichever you chose)
-- If the review or CI fails, the plugin shows Claude the specific feedback and Claude fixes it — up to 5 retry rounds
+- If review or CI fails, the plugin shows Claude the feedback and Claude fixes it — up to 5 retry rounds
 - When everything is green, the plugin enables auto-merge and waits for the PR to merge
-- Done. The whole cycle from your "add CSV export to reports" to "PR merged" runs without you typing `git` or clicking "merge".
+- Done. From "add CSV export to reports" to "PR merged" — no `git` typing, no clicking "merge".
 
-> **Why a worktree?** It's a separate folder for each branch, so the plugin only ever auto-commits in dedicated feature dirs — your main checkout stays clean and manual. The plugin **only activates inside worktrees**; it's silent in your main folder.
+When the PR merges, optionally clean up:
+
+```bash
+cd ~/Projects/my-app                  # back to main folder
+git pull                              # pull the merged commit
+git worktree remove ../my-feature     # delete the worktree
+```
+
+> **Why a worktree?** Each worktree is a separate folder for a separate branch. The plugin **only activates inside worktrees**, so your main folder stays untouched — you can keep using Claude Code normally there for manual edits, exploration, or read-only work, and nothing will be auto-committed.
 
 ---
 

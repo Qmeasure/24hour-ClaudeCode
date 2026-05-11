@@ -60,24 +60,36 @@
 
 ## 快速开始
 
-整个流程**就 3 步**,每台机器一次 + 每个 repo 一次。配好以后,你每开发一个 feature,只要 `git worktree add` 一下,后面 PR 全自动跑完。
+整个流程**就 3 步**:每台机器一次、每个 repo 一次、每个 feature 一次。配好以后,你每开发一个新 feature,只要 `git worktree add` 一下,后面 PR 全自动跑完。
 
 ```
-第 1 步(每台机器一次)→ 安装 plugin            ─┐
+第 1 步(每台机器一次)→ 安装 plugin            ─┐  任意终端、任意目录
                                                  │
-第 2 步(每个 repo 一次)→ 在 main 分支 onboard │ ← 配置必须先落到 main
-                                                 │    workflow YAML 必须
-第 3 步(每个 feature) → 开 worktree            │    在默认分支才有效
-                          改代码 → 自动 PR     ─┘
+第 2 步(每个 repo 一次)→ Onboard                │  在你项目的「主目录」里
+                          ↓                      │  (原始 git checkout)
+                          setup wizard           │  在 main 分支上
+                                                 │
+第 3 步(每个 feature) → 开一个 worktree        │  在你项目「旁边」的新目录
+                          改代码 → 自动 PR     ─┘  (同级 sibling dir)
 ```
 
-### 第 1 步 —— 安装 plugin(一次性,全局)
+### 开工前 —— 确保你有这些东西
+
+| 检查项 | 怎么验证 | 没有的话 |
+|---|---|---|
+| Claude Code CLI 装好 | `claude --version` | 从 [code.claude.com/docs](https://code.claude.com/docs/) 装 |
+| GitHub CLI 装好并登录 | `gh auth status` | `gh auth login --scopes workflow` |
+| Git 身份配好 | `git config --global user.name` | `git config --global user.name "..."` + `user.email` |
+| **一个项目文件夹** | 你知道它的完整路径,例如 `~/Projects/my-app` | 开工前先建好一个 |
+| **要么已有 GitHub repo,要么准备建一个新的** | 在该文件夹里 `gh repo view` 能跑通 | setup 向导会帮你建 |
+
+### 第 1 步 —— 装 plugin(一次性,全局,任意终端跑)
+
+你可以在任何终端、任何目录里跑。Plugin 装到你的 home 目录,对这台机器上**所有项目自动生效**。
 
 ```bash
-# 确保 gh CLI 有 workflow scope(后面要 push .github/workflows/*.yml 才能过)
-gh auth login --scopes workflow
-
-# Plugin 装一次,自动对这台机器上所有 repo 生效
+# 任意终端里:
+gh auth login --scopes workflow         # 确保 gh 有 workflow scope
 claude plugin marketplace add Qmeasure/24hour-ClaudeCode
 claude plugin install 24hour-ClaudeCode@24hour-ClaudeCode
 ```
@@ -86,58 +98,93 @@ claude plugin install 24hour-ClaudeCode@24hour-ClaudeCode
 
 装完**重启 Claude Code**(`/exit` 退出再 `claude` 进来),让 plugin 的 hook 加载进来。
 
-> **为什么是"全局"?** Plugin 代码装在 `~/.claude/plugins/...`,但激活是按项目自动判断的。你不需要每个 repo 都装一次。
+> Plugin 代码存在 `~/.claude/plugins/...`。装一次,不需要每个 repo 都装一次。
 
-### 第 2 步 —— Onboard 你的 repo(每个 repo 一次,**在 main 分支跑**)
+### 第 2 步 —— Onboard 你的 repo(每个 repo 一次,**在项目主目录里跑**)
 
-> ⚠️ **必须在 main 主 checkout 跑 setup,不能在 worktree 里跑。** setup 会把 workflow YAML(`.github/workflows/claude*.yml`)commit 到默认分支 —— GitHub Actions 只有在 workflow 已经在默认分支上时才能给它授信,所以必须先落到 main。如果你在 worktree 里跑 setup,plugin 会提示你切回 main。
+> 📍 **在哪里跑:** 终端 cd 到「你项目的主目录」—— 也就是 `.git` 目录所在的原始 checkout 目录。不是 worktree,不是其他地方。
+>
+> 例子:
+> ```bash
+> cd ~/Projects/my-app    # ← 改成你自己的项目路径
+> pwd                     # 确认在对的位置
+> ls .git                 # 这个目录应该存在(没有的话向导会引导你建)
+> ```
+
+> ⚠️ **为什么必须是"主目录":** setup 会把 `.github/workflows/claude*.yml` commit 到你的 repo。GitHub Actions 只有当这些文件存在于**默认分支**上时才能被授信运行,所以必须先落到 main。在 worktree 里跑 setup,plugin 会拒绝并提示你回主目录。
+
+确认你在 main(或你 repo 的默认分支)上:
 
 ```bash
-cd ~/your-repo
-git checkout main            # 确保在 main,不要在 feature 分支
-claude                       # 开 Claude Code session
+git checkout main         # 或者 git checkout master / 你 repo 默认的那个分支
 ```
 
-Session 打开后,plugin 会自动检测到"onboarding 没完成"并提示你。然后跑:
+然后在这个目录开 Claude Code session 跑 setup:
+
+```bash
+claude
+```
 
 ```
 /24hour-ClaudeCode:setup
 ```
 
-向导帮你搞定剩下的一切,每一步都问你确认,**没你点头不会动手**:
+向导帮你做剩下的一切。**每步都问你确认,没你点头不会动手**:
 
-1. 验证 `git`、`gh`、`claude` CLI 都装好且已登录(且 `workflow` scope 已有)
-2. 浏览器打开 GitHub → 你把 Claude 审核机器人装到这个 repo
-3. 用你的 Claude 订阅生成 OAuth token → 写入 GitHub 的 `CLAUDE_CODE_OAUTH_TOKEN` secret
-4. 读你的项目,自动识别 test / lint / build 命令
-5. 问你:"用哪个 AI 来审 PR?Claude / OpenAI Codex / 两个都要?"
-6. 按你项目的特点生成 workflow YAML → **commit 并 push 到 main**
-7. 写入 `.claude/24hour-ClaudeCode.config.json`(你的本地可调参数)
-8. 跑健康检查,确认一切就绪
+1. **验证前置条件** —— `git`、`gh`、`claude` CLI 已装好,gh 有 `workflow` scope,git 身份已配。
+2. **定位你的 repo** —— 三种情况:
+   - ✅ 已经连好 GitHub repo → 直接继续。
+   - ⚠️ 本地有 git repo 但**没接 GitHub 远端** → 向导帮你跑 `gh repo create`(它会问你 repo 名 / 公开私有 / 是否 push)。选"是"一步到位。
+   - ⚠️ 当前目录根本不是 git repo → 向导帮你 `git init -b main` + 创建首个 commit(你得至少有一个文件可 commit,加个 README 就够了)。
+3. **装 Claude 审核机器人** —— 浏览器打开 https://github.com/apps/claude,你点 Install 选这个 repo。
+4. **生成 OAuth token** —— 用你的 Claude 订阅生成,自动存到这个 repo 的 GitHub Secrets 里(`CLAUDE_CODE_OAUTH_TOKEN`)。
+5. **自动识别** test / lint / build 命令。
+6. **询问** 哪个 AI 来审 PR:Claude / OpenAI Codex / 两个都要。
+7. **生成 workflow YAML** —— 按你项目特点定制 → commit + push 到 `main`。
+8. **写入** `.claude/24hour-ClaudeCode.config.json`(你的本地可调参数)。
+9. **健康检查** —— 确认一切就绪。
 
-**然后在 GitHub 上手动开一项配置**:Settings → General → ☑️ **Allow auto-merge**(没开的话,PR 永远不会在 CI 通过后自动合)。
+向导跑完后,**在 GitHub 网页上做一件事**:打开你的 repo → Settings → General → ☑️ **Allow auto-merge**。没开的话,PR 永远不会在 CI 通过后自动合。
 
-✅ 这个 repo 从此**不再需要重新 setup**。后续你开的每个 worktree 都会自动继承这套配置。
+✅ **一次到位。** 这个 repo 配好了。后续你开的每个 worktree 都自动继承这套配置 —— 不需要再跑 setup。
 
-### 第 3 步 —— 开一个 feature(每个 feature 一次,在 worktree 里干)
+### 第 3 步 —— 开一个 feature(每个 feature 一次,在「项目旁边」的 worktree 里干)
+
+> 📍 **在哪里跑:** `worktree add` 还是在你项目的主目录里跑;新 worktree 会被建成「同级 sibling 目录」,然后你 cd 进去开**新的** Claude session。
 
 ```bash
+# 还在 ~/Projects/my-app(你的主目录)里:
 git worktree add ../my-feature -b feat/my-feature
-cd ../my-feature
-claude
+#                ↑ 创建 ~/Projects/my-feature,新分支
+
+cd ../my-feature      # 进 worktree 目录
+claude                # ← 在这里开新 Claude session(不要复用主目录那个)
 ```
 
-Plugin 自动检测:✓ 在 worktree 里、✓ main 已 onboard → **当前 worktree 的运行时已激活**。不需要重跑 setup。
+> 🔑 **关键:** 必须在 worktree 目录**重新开** Claude Code session。SessionStart hook 一个会话只跑一次,所以 plugin 的 runtime 只在 Claude 在 worktree 目录"启动时"才会激活。如果你只是把已有 session `cd` 过来,runtime 不会生效。
 
-接下来,让 Claude 干活,plugin 全自动接管:
+Claude 在 `../my-feature` 里启动后,plugin 自动检测:
+- ✓ 在 worktree 里
+- ✓ main 已 onboard(配置自动继承)
+- → **当前 worktree 的 runtime 已激活**,不需要重做 setup。
+
+让 Claude 开始干活,plugin 全自动接管:
 
 - 每次代码改动触发自动 commit 流水线(commit → push → draft PR)
 - PR 自动进入 review(Claude 或 Codex,看你之前选的)
 - 如果 review 或 CI 失败,plugin 把具体反馈喂给 Claude,Claude 自动改 —— 最多重试 5 轮
 - 全绿了,plugin 开启 auto-merge,等 PR 合并
-- 完事。从你的"在报表页加个 CSV 导出"到"PR 已合并",整个过程不用敲 `git`,不用点 "merge"。
+- 完事。从「在报表页加个 CSV 导出」到「PR 已合并」,整个过程不用敲 `git`,不用点 "merge"。
 
-> **为什么用 worktree?** 它给每个分支一个独立目录,所以 plugin 只在专门的 feature 目录里自动 commit —— 你的主目录始终保持干净、完全手动。Plugin **只在 worktree 里激活**,在主目录里完全静默。
+PR 合并后,可选清理:
+
+```bash
+cd ~/Projects/my-app                  # 回主目录
+git pull                              # 拉刚合的 commit 到本地
+git worktree remove ../my-feature     # 删 worktree
+```
+
+> **为什么用 worktree?** 每个 worktree 是独立目录、独立分支。Plugin **只在 worktree 里激活**,所以你主目录永远干净 —— 你照样可以在主目录用 Claude Code 手动改东西、做探索、做只读工作,主目录里不会触发任何自动 commit。
 
 ---
 
