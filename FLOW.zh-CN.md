@@ -74,7 +74,8 @@ Hook 输出格式(参 Claude Code 官方规范):
      7. scripts/render-workflows.sh --provider <choice> [--include-ci]:
           • 渲染 1–3 个 workflow YML(claude-code-review.yml、claude.yml、
             codex-review.yml、ci.yml —— 组合按选择决定)
-          • 渲染 .claude/24hour-ClaudeCode/review-prompt.md(外置 prompt)
+          • (Review prompt 内联在 claude-code-review.yml / codex-review.yml,
+            从 detect-project 扫描结果烧死:REPO_DESCRIPTION、TOP_DIRS、ENTRY_FILES、DANGER_PATHS)
      8. git add → commit → push(每次 push 前等用户确认)
      9. 按模板生成 .claude/24hour-ClaudeCode.config.json
     10. scripts/runtime-state.sh init → state.json,mode="idle"

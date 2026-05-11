@@ -214,7 +214,7 @@ No. It refuses to push to `main`, `master`, `develop`, `staging`, etc. You have 
 Run `/24hour-ClaudeCode:status` — it shows the current PR, how many fix rounds happened, and any warnings.
 
 **The auto-review is too strict / too loose. Can I tune it?**
-Yes. Edit `.claude/24hour-ClaudeCode/review-prompt.md` in your project. That's a plain English file telling the review bot what to focus on. Changes apply to the next PR; no re-setup needed.
+Yes. The review prompt is **inline in the workflow YAML** itself. Edit the `prompt:` block in `.github/workflows/claude-code-review.yml` (and/or `codex-review.yml`), commit, push. Changes apply to the next PR — no re-setup needed. The prompt is auto-tailored to your repo's actual structure (top-level dirs, entry files, danger paths, repo summary) at render time.
 
 **How do I uninstall it?**
 ```
@@ -242,15 +242,16 @@ After setup, your project has these knob files:
 
 ```
 your-project/
-├── .claude/24hour-ClaudeCode.config.json     ← main settings
-└── .claude/24hour-ClaudeCode/review-prompt.md ← what the review bot looks for
+├── .claude/24hour-ClaudeCode.config.json              ← main settings
+└── .github/workflows/claude-code-review.yml           ← review prompt (in the prompt: block)
+└── .github/workflows/codex-review.yml (if codex)      ← review prompt for Codex
 ```
 
 The most common changes:
 
 | What you want | How |
 |---|---|
-| Focus reviews on something specific (e.g., security only) | Edit `.claude/24hour-ClaudeCode/review-prompt.md` |
+| Focus reviews on something specific (e.g., security only) | Edit the `prompt:` block in `.github/workflows/claude-code-review.yml` |
 | Allow more retry rounds before giving up | Change `repair.max_iterations` in the config file (default 5) |
 | Add a path that should NEVER be auto-committed | Add a glob to the `danger_paths` array in the config file |
 | Skip running tests before each commit (faster but riskier) | Set `checks.run_local_tests: false` in the config file |

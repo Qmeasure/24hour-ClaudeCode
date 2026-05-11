@@ -75,7 +75,7 @@ Triggered by the user manually, not by a hook.
      7. scripts/render-workflows.sh --provider <choice> [--include-ci]:
           • Render 1–3 workflow YMLs (claude-code-review.yml, claude.yml,
             codex-review.yml, ci.yml — combination depends on choices)
-          • Render .claude/24hour-ClaudeCode/review-prompt.md (externalized)
+          • (Review prompt is INLINE in claude-code-review.yml / codex-review.yml, baked in from detect-project scan: REPO_DESCRIPTION, TOP_DIRS, ENTRY_FILES, DANGER_PATHS)
      8. git add → commit → push (with user confirmation per push)
      9. Seed .claude/24hour-ClaudeCode.config.json from template
     10. scripts/runtime-state.sh init → state.json with mode="idle"

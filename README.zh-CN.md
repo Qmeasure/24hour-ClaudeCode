@@ -214,7 +214,7 @@ git worktree remove ../my-feature     # 删 worktree
 跑 `/24hour-ClaudeCode:status`,会展示当前的 PR、改了几轮、有没有警告。
 
 **自动审核太严 / 太松,能调吗?**
-能。改 `.claude/24hour-ClaudeCode/review-prompt.md` 文件 —— 那是个大白话写的文件,告诉审核机器人重点看什么。改完下个 PR 自动生效,不需要重新 setup。
+能。review prompt **直接写在 workflow YAML 里**。改 `.github/workflows/claude-code-review.yml`(以及 `codex-review.yml` 如果用 Codex)的 `prompt:` 块,commit、push,下个 PR 自动生效,不需要重 setup。这个 prompt 在 onboarding 时已经按你 repo 的实际结构(top-level 目录、入口文件、敏感路径、repo 简介)定制好了。
 
 **怎么卸载?**
 ```
@@ -238,19 +238,20 @@ git worktree remove ../my-feature     # 删 worktree
 
 ## 个性化(可选)
 
-setup 完成后,你的项目里会多出这两个可调的文件:
+setup 完成后,你的项目里会多出这几个可调的文件:
 
 ```
 your-project/
-├── .claude/24hour-ClaudeCode.config.json     ← 主配置
-└── .claude/24hour-ClaudeCode/review-prompt.md ← 审核机器人的关注点
+├── .claude/24hour-ClaudeCode.config.json              ← 主配置
+└── .github/workflows/claude-code-review.yml           ← review prompt(在 prompt: 块里)
+└── .github/workflows/codex-review.yml (如有 codex)    ← codex 的 review prompt
 ```
 
 最常改的几样:
 
 | 你想要的 | 怎么改 |
 |---|---|
-| 让审核机器人专注某个方面(比如只审安全) | 改 `.claude/24hour-ClaudeCode/review-prompt.md` |
+| 让审核机器人专注某个方面(比如只审安全) | 改 `.github/workflows/claude-code-review.yml` 的 `prompt:` 块 |
 | 多给几次重试机会再放弃 | 配置文件里调 `repair.max_iterations`(默认 5) |
 | 加一个路径"永远不要自动 commit" | 配置文件 `danger_paths` 数组里加上 glob |
 | commit 前不跑测试(更快但风险大) | 配置文件 `checks.run_local_tests` 改成 `false` |

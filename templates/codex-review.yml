@@ -41,25 +41,21 @@ jobs:
         run: |
           git fetch --no-tags origin "$PR_BASE_REF" "+refs/pull/$PR_NUMBER/head"
 
-      - name: Load review prompt
-        id: prompt
-        run: |
-          PROMPT_FILE=".claude/24hour-ClaudeCode/review-prompt.md"
-          if [ -f "$PROMPT_FILE" ]; then
-            { echo 'body<<__EOF__'; cat "$PROMPT_FILE"; echo; echo '__EOF__'; } >> "$GITHUB_OUTPUT"
-          else
-            echo 'body=Review this PR for correctness, security, and tests. Cite file:line for each finding.' >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Run Codex review
         id: run_codex
         uses: openai/codex-action@v1.8
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           prompt: |
-            ${{ steps.prompt.outputs.body }}
+            Review PR ${{ github.repository }}/pull/${{ github.event.pull_request.number }}.
 
-            PR: ${{ github.repository }}/pull/${{ github.event.pull_request.number }}
+            This is the STATIC FALLBACK template (no project tailoring). Use
+            scripts/render-workflows.sh for a project-specific prompt baked in
+            at render time. Until then, apply general best practices:
+            - Cite file:line for every issue.
+            - Group findings by severity: Reject / Major / Minor / Nit.
+            - Skip trivial nits; lead with structural concerns.
+            - Be concise.
 
       - name: Post review as PR comment
         if: ${{ steps.run_codex.outputs.final-message != '' }}

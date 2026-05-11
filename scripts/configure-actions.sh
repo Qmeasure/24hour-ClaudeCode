@@ -489,7 +489,7 @@ else
     [[ "$PROVIDER" == "claude" || "$PROVIDER" == "both" ]] && echo "    - .github/workflows/claude-code-review.yml"
     [[ "$PROVIDER" == "claude" || "$PROVIDER" == "both" ]] && echo "    - .github/workflows/claude.yml"
     [[ "$PROVIDER" == "codex"  || "$PROVIDER" == "both" ]] && echo "    - .github/workflows/codex-review.yml"
-    echo "    - .claude/24hour-ClaudeCode/review-prompt.md (externalized prompt; edit anytime)"
+    echo "    (review prompt is INLINE in the YAML; edit the prompt: block in the YAML to tune)"
     echo ""
     if [[ "$(ask 'Render?' 'y')" =~ ^[Yy] ]]; then
       RENDER_FLAGS=( --provider "$PROVIDER" )
@@ -525,28 +525,15 @@ if [[ "$PROVIDER" == "codex" || "$PROVIDER" == "both" ]]; then
   fi
 fi
 
-# ---- Step 5: Commit + push (workflows + tailored review prompt) ----
+# ---- Step 5: Commit + push (workflow YAMLs) ----
 #
-# CRITICAL: render-workflows.sh writes BOTH:
-#   1. .github/workflows/*.yml (varies by provider + include-ci)
-#   2. .claude/24hour-ClaudeCode/review-prompt.md (ALWAYS — used by the
-#      Action at runtime; without it on the default branch, the runner's
-#      checkout has no project-tailored prompt and Claude review uses the
-#      one-line fallback embedded in the YAML).
-#
-# Previous versions of this script hardcoded `git add .github/workflows/claude.yml
-# .github/workflows/claude-code-review.yml` and silently dropped:
-#   - review-prompt.md (regression: tailored prompt never reached GitHub)
-#   - codex-review.yml (regression: provider=codex/both didn't push the codex YAML)
-#   - ci.yml          (regression: --include-ci didn't push the CI YAML)
-# This step now enumerates the exact files Step 4 generated.
-say "Step 5: Commit + push generated files"
+# Review prompts are INLINE in the workflow YAMLs as of v1.0.10 — no separate
+# .claude/24hour-ClaudeCode/review-prompt.md file to track. Each YAML carries
+# its own project-tailored prompt baked in at render time from detect-project.sh
+# scan results (REPO_DESCRIPTION, TOP_DIRS, ENTRY_FILES, DANGER_PATHS, etc).
+say "Step 5: Commit + push workflow YAMLs"
 
 files_to_commit=()
-# Tailored review prompt — render-workflows.sh always emits this regardless of provider.
-[[ -f .claude/24hour-ClaudeCode/review-prompt.md ]] && \
-  files_to_commit+=(".claude/24hour-ClaudeCode/review-prompt.md")
-# Workflow YAMLs, picked by provider + include-ci to match what Step 4 chose.
 if [[ "$PROVIDER" == "claude" || "$PROVIDER" == "both" ]]; then
   [[ -f .github/workflows/claude.yml ]] && \
     files_to_commit+=(".github/workflows/claude.yml")
@@ -561,7 +548,7 @@ fi
   files_to_commit+=(".github/workflows/ci.yml")
 
 if (( ${#files_to_commit[@]} == 0 )); then
-  warn "Step 5: no Step-4-generated files found on disk. Did render-workflows.sh fail?"
+  warn "Step 5: no workflow YAMLs found on disk. Did render-workflows.sh fail?"
 elif git status --porcelain "${files_to_commit[@]}" 2>/dev/null | grep -q '.'; then
   if (( DRY == 0 )); then
     echo "  Files to commit:"
@@ -569,21 +556,20 @@ elif git status --porcelain "${files_to_commit[@]}" 2>/dev/null | grep -q '.'; t
     echo ""
     echo "  Suggested commands:"
     echo "    git add ${files_to_commit[*]}"
-    echo "    git commit -m 'Add Claude Code Actions workflows + tailored review prompt'"
+    echo "    git commit -m 'Add Claude Code Actions workflows'"
     echo "    git push"
     echo ""
     if [[ "$(ask 'Run these now?' 'y')" =~ ^[Yy] ]]; then
       git add -- "${files_to_commit[@]}"
-      git commit -m "Add Claude Code Actions workflows + tailored review prompt"
+      git commit -m "Add Claude Code Actions workflows"
       git push 2>/dev/null || warn "Push failed (no upstream?). Run 'git push -u origin <branch>' manually"
       ok "Pushed: ${files_to_commit[*]}"
     else
       warn "Don't forget to git add + commit + push manually before opening a PR."
-      warn "If you skip review-prompt.md, the review will use a generic fallback prompt."
     fi
   fi
 else
-  ok "All Step-4 files already committed: ${files_to_commit[*]}"
+  ok "All workflow YAMLs already committed: ${files_to_commit[*]}"
 fi
 
 # ---- Step 6: Health check ----

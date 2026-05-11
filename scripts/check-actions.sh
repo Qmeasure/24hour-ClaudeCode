@@ -129,36 +129,8 @@ if [[ -f .github/workflows/claude.yml ]]; then
   fi
 fi
 
-# ---- 5b. Tailored review prompt on default branch ----
-# render-workflows.sh writes .claude/24hour-ClaudeCode/review-prompt.md, but
-# users have hit a bug where configure-actions.sh's Step 5 forgot to `git add`
-# it. The workflow YAMLs read this file at runtime; if it's not on the default
-# branch, the runner's checkout doesn't have it and the YAML's one-line fallback
-# prompt kicks in — Claude review then loses all project-tailored context.
-#
-# Three checks:
-#   a. Local working-tree existence
-#   b. Tracked by git (committed at all)
-#   c. Present on default branch on GitHub (the one Action's checkout uses)
-if [[ -f .claude/24hour-ClaudeCode/review-prompt.md ]]; then
-  if git ls-files --error-unmatch .claude/24hour-ClaudeCode/review-prompt.md >/dev/null 2>&1; then
-    ok "review-prompt.md exists locally AND is tracked in git"
-
-    # Also verify it's on the default branch on GitHub (not just a feature branch)
-    if [[ -n "$REPO" ]]; then
-      default_branch=$(gh repo view "$REPO" --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null || echo "main")
-      if gh api "repos/$REPO/contents/.claude/24hour-ClaudeCode/review-prompt.md?ref=$default_branch" >/dev/null 2>&1; then
-        ok "review-prompt.md is on default branch ($default_branch) on GitHub"
-      else
-        err "review-prompt.md is tracked locally but NOT on $default_branch on GitHub — push it (the Action's checkout uses the default branch)"
-      fi
-    fi
-  else
-    err ".claude/24hour-ClaudeCode/review-prompt.md exists locally but is NOT in git — run: git add .claude/24hour-ClaudeCode/review-prompt.md && git commit && git push"
-  fi
-else
-  warn ".claude/24hour-ClaudeCode/review-prompt.md not found locally — review will use one-line fallback prompt (no project tailoring). Re-run /24hour-ClaudeCode:setup or scripts/render-workflows.sh to generate."
-fi
+# (5b removed: review-prompt.md no longer exists. Review prompt is inline
+# in claude-code-review.yml / codex-review.yml as of v1.0.10.)
 
 # ---- 6. Superset env (informational) ----
 if [[ -n "${SUPERSET_WORKSPACE_PATH:-}" ]]; then
