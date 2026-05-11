@@ -76,59 +76,183 @@ if ! gh auth status 2>&1 | grep -qE "scopes:.*workflow"; then
 fi
 ok "All prerequisites met"
 
-# ---- Step 1: Resolve repo ----
+# ---- Step 1: Resolve repo (with guided setup if new) ----
 say "Step 1: Identify current repo"
-REPO="$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null)" \
-  || err "Current directory is not a GitHub repo, or gh has no access"
+echo "  Working directory: $(pwd)"
+
+# 1a. Is the current directory a git repo?
+if ! git rev-parse --git-dir >/dev/null 2>&1; then
+  warn "This directory is NOT a git repository."
+  echo ""
+  echo "  The plugin needs a git repo to operate."
+  echo "  Make sure you are inside the project folder you want to track."
+  echo "  Current directory: $(pwd)"
+  if (( DRY == 1 )); then
+    err "Aborting (dry-run): not in a git repo"
+  fi
+  if [[ "$(ask "Initialize a new git repo here (in $(pwd))?" 'n')" =~ ^[Yy] ]]; then
+    # `-b main` requires git >= 2.28; fall back to init + rename for older git.
+    if ! git init -b main 2>/dev/null; then
+      git init && git symbolic-ref HEAD refs/heads/main
+    fi
+    ok "Initialized empty git repo (branch: main)"
+  else
+    err "Aborting. cd into the right folder (or run 'git init -b main') and re-run /24hour-ClaudeCode:setup."
+  fi
+fi
+
+# Resolve absolute path of the repo root, so user sees exactly where we're working.
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+echo "  Repo root:         $REPO_ROOT"
+
+# 1b. Is there at least one commit?
+if ! git rev-parse HEAD >/dev/null 2>&1; then
+  warn "Git repo exists but has NO commits yet."
+  # Need git user.name and user.email to commit
+  user_name=$(git config user.name 2>/dev/null || git config --global user.name 2>/dev/null || echo "")
+  user_email=$(git config user.email 2>/dev/null || git config --global user.email 2>/dev/null || echo "")
+  if [[ -z "$user_name" || -z "$user_email" ]]; then
+    warn "Git user.name / user.email not configured — needed to commit."
+    echo "  Run these first (one-time global setup):"
+    echo "    git config --global user.name 'Your Name'"
+    echo "    git config --global user.email 'you@example.com'"
+    err "Aborting. Configure git identity then re-run."
+  fi
+  # Files to commit?
+  if [[ -z "$(git status --porcelain 2>/dev/null)" ]]; then
+    warn "No files to commit in $(pwd)."
+    echo "  Add at least one file (even a README.md), then re-run /24hour-ClaudeCode:setup."
+    err "Aborting. Add some code and re-run."
+  fi
+  if [[ "$(ask 'Stage all files and create an initial commit?' 'y')" =~ ^[Yy] ]]; then
+    if (( DRY == 0 )); then
+      git add -A && git commit -q -m "initial commit" \
+        || err "git commit failed. Check git output above."
+      ok "Initial commit created on branch: $(git branch --show-current)"
+    fi
+  else
+    err "Aborting. Create an initial commit then re-run."
+  fi
+fi
+
+# 1c. Is there a GitHub remote that gh can reach?
+REPO=""
+remote_url=$(git remote get-url origin 2>/dev/null || echo "")
+if [[ -n "$remote_url" ]]; then
+  REPO="$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || echo '')"
+fi
+
+if [[ -z "$REPO" ]]; then
+  if [[ -z "$remote_url" ]]; then
+    warn "No GitHub remote configured for this repo yet."
+  else
+    warn "Remote 'origin' is set ($remote_url) but gh can't view it."
+    echo "  Possible: the remote doesn't exist on GitHub yet, or you lack access."
+  fi
+  echo ""
+  echo "  Two ways forward:"
+  echo "    (A) Create a NEW GitHub repo from this folder  ← recommended if this is a fresh project"
+  echo "    (B) Connect to an EXISTING GitHub repo manually"
+  echo ""
+  if (( DRY == 1 )); then
+    err "Aborting (dry-run): no GitHub remote"
+  fi
+  choice=$(ask "Choose A or B" "A")
+  case "$choice" in
+    [Aa]*)
+      echo ""
+      say "  Running 'gh repo create' — it will ask for repo name, visibility, and offer to push."
+      echo "  Tip: when it asks 'Push commits from the current branch?', answer Yes."
+      echo ""
+      gh repo create --source=. --remote=origin --push \
+        || err "gh repo create failed. See output above. You can also run it interactively: gh repo create"
+      REPO="$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null)" \
+        || err "Repo created but gh can't see it. Try: gh auth refresh"
+      ok "Created and connected: $REPO"
+      ;;
+    *)
+      echo ""
+      echo "  Manual steps for an existing GitHub repo:"
+      echo "    git remote add origin git@github.com:<OWNER>/<REPO>.git"
+      echo "    git push -u origin $(git branch --show-current)"
+      echo ""
+      echo "  Then re-run /24hour-ClaudeCode:setup from this same folder ($(pwd))."
+      err "Aborting. Connect the remote, push the branch, then re-run."
+      ;;
+  esac
+fi
+
 ok "Target repo: $REPO"
+echo "  Current branch: $(git branch --show-current)"
+echo "  Default branch (where setup will commit): $(gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null || echo 'main')"
+
+# ---- State summary: what's already done, what's left ----
+say "Current onboarding state for $REPO"
+state_app="unverifiable (REST API requires App-JWT; you must check manually)"
+state_secret="✗ missing"
+if gh secret list -R "$REPO" 2>/dev/null | grep -q "^CLAUDE_CODE_OAUTH_TOKEN"; then
+  secret_age=$(gh secret list -R "$REPO" 2>/dev/null | awk '$1=="CLAUDE_CODE_OAUTH_TOKEN" {for(i=2;i<=NF;i++) printf "%s ", $i; print ""}')
+  state_secret="✓ set (${secret_age% })"
+fi
+state_workflows="✗ no .github/workflows/claude*.yml or codex*.yml"
+if compgen -G ".github/workflows/claude*.yml" >/dev/null 2>&1 \
+   || compgen -G ".github/workflows/codex*.yml" >/dev/null 2>&1; then
+  found_wf=$(ls .github/workflows/claude*.yml .github/workflows/codex*.yml 2>/dev/null | xargs -n1 basename | tr '\n' ' ')
+  state_workflows="✓ ${found_wf}"
+fi
+state_config="✗ .claude/24hour-ClaudeCode.config.json missing"
+[[ -f .claude/24hour-ClaudeCode.config.json ]] && state_config="✓ present"
+
+echo "  Claude GitHub App on repo:      $state_app"
+echo "  CLAUDE_CODE_OAUTH_TOKEN secret: $state_secret"
+echo "  Workflow YAML(s):               $state_workflows"
+echo "  Plugin config file:             $state_config"
+echo ""
+echo "  The wizard will skip already-done items. Re-running setup is always safe."
+echo ""
 
 # ---- Step 2: GitHub App ----
+#
+# IMPORTANT: there is NO user-PAT-accessible REST endpoint that confirms a
+# GitHub App is installed on a given repo. `gh api repos/OWNER/REPO/installation`
+# and `/user/installations` both require App-JWT auth (return 401 with user
+# token). So we cannot programmatically verify the install — we open the
+# user-facing installations page where the user can SEE the install themselves,
+# wait for their confirmation, and trust it.
+#
+# Indirect verification happens later anyway: if the App isn't installed, the
+# first PR's auto-review will fail with a clear "App not installed" error.
 if (( SKIP_APP == 0 )); then
-  say "Step 2: Install / verify Claude GitHub App"
-  echo "  Browser flow: https://github.com/apps/claude → Install → choose your account"
-  echo "  → Only select repositories → tick $REPO"
+  say "Step 2: Install Claude GitHub App on $REPO"
+  echo ""
+  echo "  Two pages will help you do this:"
+  echo "    1. Install/configure page: https://github.com/apps/claude"
+  echo "       → Click 'Install' (or 'Configure' if already installed)"
+  echo "       → 'Only select repositories' → tick: $REPO"
+  echo "       → Click 'Install' / 'Save'"
+  echo ""
+  echo "    2. Verify page: https://github.com/settings/installations"
+  echo "       → Find 'Claude' in the list → click 'Configure'"
+  echo "       → Confirm $REPO appears under 'Repository access'"
+  echo ""
   if (( DRY == 0 )); then
-    if [[ "$(ask 'Open in browser now?' 'y')" =~ ^[Yy] ]]; then
+    if [[ "$(ask 'Open the install page in your browser now?' 'y')" =~ ^[Yy] ]]; then
       open  "https://github.com/apps/claude" 2>/dev/null || \
       xdg-open "https://github.com/apps/claude" 2>/dev/null || \
         echo "  (could not auto-open; please visit the URL manually)"
     fi
     echo ""
-    read -r -p "$(printf '\033[1;35m?\033[0m App installed on %s — press Enter to verify... ' "$REPO")"
-  fi
-
-  # Poll for installation up to 60s. The user might still be finishing the
-  # browser flow, so retry a few times before giving up.
-  app_verified=0
-  if (( DRY == 0 )); then
-    for attempt in 1 2 3 4 5 6; do
-      if gh api "repos/$REPO/installation" >/dev/null 2>&1; then
-        app_verified=1
-        break
-      fi
-      if (( attempt < 6 )); then
-        warn "App install not detected on $REPO yet (attempt $attempt/6); retrying in 10s..."
-        sleep 10
-      fi
-    done
-  fi
-
-  if (( app_verified == 1 )); then
-    ok "Verified Claude GitHub App is installed on $REPO"
-  else
-    warn "Could not verify App installation on $REPO via gh api repos/$REPO/installation"
-    echo "  Possible causes:"
-    echo "    - You closed the browser before completing the install"
-    echo "    - You installed on a different repo / account"
-    echo "    - The App needs a moment to propagate (try /24hour-ClaudeCode:setup again in 1 min)"
-    if (( DRY == 0 )); then
-      if [[ ! "$(ask 'Continue anyway?' 'n')" =~ ^[Yy] ]]; then
-        err "Aborted. Re-run /24hour-ClaudeCode:setup after installing the App."
-      fi
-    fi
+    echo "  Note: the GitHub REST API does NOT let user tokens check App installs,"
+    echo "  so this script cannot auto-verify. After you finish the install + see"
+    echo "  $REPO in https://github.com/settings/installations under 'Claude',"
+    echo "  press Enter to continue."
+    echo ""
+    read -r -p "$(printf '\033[1;35m?\033[0m Confirmed installed on %s? Press Enter (or Ctrl+C to abort)... ' "$REPO")"
+    ok "Trusting user confirmation that Claude App is installed on $REPO"
+    echo "  (If you got this wrong, the first PR's auto-review will fail and tell you.)"
   fi
 else
-  warn "--skip-app-install: skipping App check"
+  warn "--skip-app-install: skipping App install step (assuming it's already done)"
 fi
 
 # ---- Step 2.5: Pick review provider (BEFORE secrets so we only set what's needed) ----
