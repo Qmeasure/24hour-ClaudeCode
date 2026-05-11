@@ -87,12 +87,25 @@ if ! gh auth status >/dev/null 2>&1; then
   exit 13
 fi
 
-# 5. Diff too large
-diff_lines=$(git diff --shortstat 2>/dev/null | grep -oE '[0-9]+' | head -2 | paste -sd+ - | bc 2>/dev/null || echo 0)
-diff_lines=${diff_lines:-0}
-if (( diff_lines > max_diff_lines )); then
-  echo "stop:diff_too_large"
-  exit 16
+# 5. Diff too large — runaway-repair guard.
+#
+# This guard's documented intent (skills/using-24hour-ClaudeCode/SKILL.md:175):
+#   "Diff exceeds max_diff_lines (default 500) — likely runaway repair. Escalate."
+#
+# It is supposed to catch the case where Claude, in a rework loop, keeps growing
+# the diff instead of converging on a fix. It is NOT supposed to second-guess
+# the developer's first-time feature commit.
+#
+# Earlier versions checked unconditionally and blocked legitimate first commits
+# (e.g. 818-line new module on iteration=0). Now we only check on rework
+# rounds (iteration >= 1) and respect max_diff_lines <= 0 as "disabled".
+if (( iteration >= 1 )) && (( max_diff_lines > 0 )); then
+  diff_lines=$(git diff --shortstat 2>/dev/null | grep -oE '[0-9]+' | head -2 | paste -sd+ - | bc 2>/dev/null || echo 0)
+  diff_lines=${diff_lines:-0}
+  if (( diff_lines > max_diff_lines )); then
+    echo "stop:diff_too_large"
+    exit 16
+  fi
 fi
 
 echo "continue"
