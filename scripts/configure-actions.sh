@@ -191,13 +191,26 @@ echo "  Current branch: $(git branch --show-current)"
 echo "  Default branch (where setup will commit): $(gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null || echo 'main')"
 
 # ---- State summary: what's already done, what's left ----
+# All four artifacts use precise side-channel / direct probes — no false
+# negatives like the v1.0.1/1.0.2 `gh api repos/.../installation` mistake.
 say "Current onboarding state for $REPO"
-state_app="unverifiable (REST API requires App-JWT; you must check manually)"
-state_secret="✗ missing"
-if gh secret list -R "$REPO" 2>/dev/null | grep -q "^CLAUDE_CODE_OAUTH_TOKEN"; then
-  secret_age=$(gh secret list -R "$REPO" 2>/dev/null | awk '$1=="CLAUDE_CODE_OAUTH_TOKEN" {for(i=2;i<=NF;i++) printf "%s ", $i; print ""}')
-  state_secret="✓ set (${secret_age% })"
-fi
+
+# App: check_suites side-channel (anthropics-owned `claude` slug)
+app_result=$(bash "$SCRIPT_DIR_THIS/check-claude-app.sh" "$REPO" 2>&1)
+case $? in
+  0) state_app="✓ ${app_result#installed: }" ;;
+  1) state_app="✗ NOT detected via check_suites (install or push needed; see Step 2)" ;;
+  *) state_app="? ${app_result#unknown: }" ;;
+esac
+
+# Secret: precise GET /repos/.../actions/secrets/<NAME> probe
+sec_result=$(bash "$SCRIPT_DIR_THIS/check-secret.sh" "$REPO" CLAUDE_CODE_OAUTH_TOKEN 2>&1)
+case $? in
+  0) state_secret="✓ ${sec_result#exists: }" ;;
+  1) state_secret="✗ missing CLAUDE_CODE_OAUTH_TOKEN" ;;
+  *) state_secret="? ${sec_result#unknown: }" ;;
+esac
+
 state_workflows="✗ no .github/workflows/claude*.yml or codex*.yml"
 if compgen -G ".github/workflows/claude*.yml" >/dev/null 2>&1 \
    || compgen -G ".github/workflows/codex*.yml" >/dev/null 2>&1; then
@@ -306,35 +319,95 @@ case "$PROVIDER" in
 esac
 ok "Provider: $PROVIDER"
 
-# ---- Step 3: OAuth token & secret (only when Claude is in scope) ----
+# ---- Step 3: CLAUDE_CODE_OAUTH_TOKEN secret ----
+#
+# Both sub-steps (`claude setup-token` and `gh secret set`) are interactive in
+# ways this script cannot drive automatically:
+#   - `claude setup-token` opens a browser, OAuth-logs you in with your Claude
+#     account, and prints the resulting `sk-ant-oat01-...` token to YOUR terminal.
+#     The script can't capture stdout of an interactive browser flow.
+#   - `gh secret set <NAME> -R <REPO>` (without --body) prompts you to paste the
+#     token. We want this interactive variant — `--body` would put the token in
+#     shell history / the process arglist, which is unsafe.
+#
+# So: detect first (precise probe), then if missing, print exact CLI commands
+# for the user to run in their terminal, wait for them to come back, re-verify.
+# Don't try to call them from inside this script.
 if [[ "$PROVIDER" == "claude" || "$PROVIDER" == "both" ]]; then
-  say "Step 3: Claude OAuth token secret"
+  say "Step 3: CLAUDE_CODE_OAUTH_TOKEN secret"
+
   NEED_TOKEN=0
-  if gh secret list -R "$REPO" 2>/dev/null | grep -q "^CLAUDE_CODE_OAUTH_TOKEN"; then
-    EXISTING_TIME=$(gh secret list -R "$REPO" | awk '$1=="CLAUDE_CODE_OAUTH_TOKEN" {print $2}')
-    ok "Secret already set ($EXISTING_TIME)"
-    if [[ "$(ask 'Regenerate anyway?' 'n')" =~ ^[Yy] ]]; then
-      NEED_TOKEN=1
-    fi
-  else
-    warn "CLAUDE_CODE_OAUTH_TOKEN secret not found — will generate"
-    NEED_TOKEN=1
-  fi
+  sec_check=$(bash "$SCRIPT_DIR_THIS/check-secret.sh" "$REPO" CLAUDE_CODE_OAUTH_TOKEN 2>&1)
+  case $? in
+    0)
+      ok "${sec_check#exists: }"
+      if [[ "$(ask 'Regenerate the token anyway?' 'n')" =~ ^[Yy] ]]; then
+        NEED_TOKEN=1
+      fi
+      ;;
+    1) NEED_TOKEN=1 ;;
+    *) warn "Cannot probe secret: $sec_check"
+       [[ "$(ask 'Continue anyway?' 'n')" =~ ^[Yy] ]] || err "Aborted." ;;
+  esac
 
   if (( NEED_TOKEN == 1 )) && (( DRY == 0 )); then
     echo ""
-    echo "  About to run 'claude setup-token'. It opens a browser for OAuth login"
-    echo "  with your Claude Pro/Max account. The terminal then prints a long token"
-    echo "  starting with 'sk-ant-oat01-'. **Copy it** — the next step asks you to paste."
+    echo "  ╔═══════════════════════════════════════════════════════════════════╗"
+    echo "  ║  Run these THREE commands in YOUR terminal (this script cannot   ║"
+    echo "  ║  do them because both are interactive — browser OAuth + paste).  ║"
+    echo "  ╚═══════════════════════════════════════════════════════════════════╝"
     echo ""
-    echo "  Security: NEVER paste this token into chat, commit messages, .env files,"
-    echo "  Slack, or email. The only safe destination is GitHub Secrets (next step)."
-    read -r -p "$(printf '\033[1;35m?\033[0m Press Enter to start, or Ctrl+C to abort... ')"
-    claude setup-token || err "claude setup-token failed"
+    echo "  ┌─ 1. Generate the OAuth token ─────────────────────────────────────┐"
+    echo "  │                                                                   │"
+    echo "  │   claude setup-token                                              │"
+    echo "  │                                                                   │"
+    echo "  │   → Browser opens. Sign in with Claude Pro/Max account.           │"
+    echo "  │   → Terminal then prints a long string starting:                  │"
+    echo "  │       sk-ant-oat01-XXXXXXXX...                                    │"
+    echo "  │   → Copy that string (whole line, nothing else).                  │"
+    echo "  │                                                                   │"
+    echo "  └───────────────────────────────────────────────────────────────────┘"
     echo ""
-    echo "  Now paste the token to gh secret set:"
-    gh secret set CLAUDE_CODE_OAUTH_TOKEN -R "$REPO" || err "gh secret set failed"
-    ok "Secret saved to $REPO"
+    echo "  ┌─ 2. Save to this repo's GitHub Actions Secrets ───────────────────┐"
+    echo "  │                                                                   │"
+    echo "  │   gh secret set CLAUDE_CODE_OAUTH_TOKEN -R $REPO    "
+    echo "  │                                                                   │"
+    echo "  │   → gh prompts 'Paste your secret:' (no echo, not in shell hist)  │"
+    echo "  │   → Paste the sk-ant-oat01-... string, hit Enter.                 │"
+    echo "  │   → '✓ Set Actions secret CLAUDE_CODE_OAUTH_TOKEN' confirms.      │"
+    echo "  │                                                                   │"
+    echo "  └───────────────────────────────────────────────────────────────────┘"
+    echo ""
+    echo "  ┌─ 3. (Optional) Verify yourself ───────────────────────────────────┐"
+    echo "  │                                                                   │"
+    echo "  │   gh api repos/$REPO/actions/secrets/CLAUDE_CODE_OAUTH_TOKEN  "
+    echo "  │                                                                   │"
+    echo "  │   → 200 + JSON (name/created_at/updated_at) = set.                │"
+    echo "  │   → 404 = not set (try Step 2 again).                             │"
+    echo "  │   → No value is ever returned; GitHub never exposes secret values.│"
+    echo "  │                                                                   │"
+    echo "  └───────────────────────────────────────────────────────────────────┘"
+    echo ""
+    echo "  Security reminder:"
+    echo "    NEVER paste the sk-ant-oat01-... token into chat, commit messages,"
+    echo "    .env files, Slack, or email. The only safe destination is the gh"
+    echo "    secret set prompt above (it goes encrypted into GitHub Secrets)."
+    echo ""
+    read -r -p "$(printf '\033[1;35m?\033[0m After running 1 + 2, press Enter and I will verify. (Ctrl+C to abort.) ')"
+
+    # Re-probe with the precise check
+    sec_recheck=$(bash "$SCRIPT_DIR_THIS/check-secret.sh" "$REPO" CLAUDE_CODE_OAUTH_TOKEN 2>&1)
+    if [[ $? -eq 0 ]]; then
+      ok "Verified: ${sec_recheck#exists: }"
+    else
+      warn "Secret still not detected: $sec_recheck"
+      echo "    Most common causes:"
+      echo "      - 'gh secret set' was interrupted / errored (run it again)"
+      echo "      - Typo in the repo arg (should be: -R $REPO)"
+      echo "      - You lack repo admin permission (need it to set secrets)"
+      [[ "$(ask 'Continue anyway (workflows won''t actually work without this)?' 'n')" =~ ^[Yy] ]] \
+        || err "Aborted. Set the secret then re-run /24hour-ClaudeCode:setup."
+    fi
   fi
 else
   say "Step 3: skipped (Claude not in selected provider)"
