@@ -41,6 +41,10 @@ STATIC_TEMPLATES=0
 PROVIDER=""           # claude | codex | both — empty = ask interactively
 INCLUDE_CI=""         # 1|0 — empty = auto-detect existing CI
 
+# Locate this script's own dir — needed to invoke sibling helpers like
+# check-claude-app.sh from Step 2 onward.
+SCRIPT_DIR_THIS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run) DRY=1; shift ;;
@@ -211,48 +215,77 @@ echo ""
 echo "  The wizard will skip already-done items. Re-running setup is always safe."
 echo ""
 
-# ---- Step 2: GitHub App ----
+# ---- Step 2: Verify Claude GitHub App is installed on $REPO ----
 #
-# IMPORTANT: there is NO user-PAT-accessible REST endpoint that confirms a
-# GitHub App is installed on a given repo. `gh api repos/OWNER/REPO/installation`
-# and `/user/installations` both require App-JWT auth (return 401 with user
-# token). So we cannot programmatically verify the install — we open the
-# user-facing installations page where the user can SEE the install themselves,
-# wait for their confirmation, and trust it.
+# Most users already have the Claude App installed at the account level (often
+# with "All repositories" selected). For them, this step is a one-line auto-
+# detect — no browser, no clicks. We only walk through Install if detection
+# fails.
 #
-# Indirect verification happens later anyway: if the App isn't installed, the
-# first PR's auto-review will fail with a clear "App not installed" error.
+# Detection uses scripts/check-claude-app.sh — it queries check_suites on the
+# default-branch HEAD; any installed App with checks:write permission appears
+# there. See that script's header for caveats (mainly: the suite is created at
+# commit-push time, so if a user installs the App AFTER their last push, the
+# current HEAD's suite won't include Claude — we re-verify after Step 5's push).
 if (( SKIP_APP == 0 )); then
-  say "Step 2: Install Claude GitHub App on $REPO"
-  echo ""
-  echo "  Two pages will help you do this:"
-  echo "    1. Install/configure page: https://github.com/apps/claude"
-  echo "       → Click 'Install' (or 'Configure' if already installed)"
-  echo "       → 'Only select repositories' → tick: $REPO"
-  echo "       → Click 'Install' / 'Save'"
-  echo ""
-  echo "    2. Verify page: https://github.com/settings/installations"
-  echo "       → Find 'Claude' in the list → click 'Configure'"
-  echo "       → Confirm $REPO appears under 'Repository access'"
-  echo ""
+  say "Step 2: Verify Claude GitHub App on $REPO"
+
   if (( DRY == 0 )); then
-    if [[ "$(ask 'Open the install page in your browser now?' 'y')" =~ ^[Yy] ]]; then
-      open  "https://github.com/apps/claude" 2>/dev/null || \
-      xdg-open "https://github.com/apps/claude" 2>/dev/null || \
-        echo "  (could not auto-open; please visit the URL manually)"
+    detect_result=$(bash "$SCRIPT_DIR_THIS/check-claude-app.sh" "$REPO" 2>&1)
+    detect_exit=$?
+  else
+    detect_result="(dry-run skipped)"
+    detect_exit=1
+  fi
+
+  if (( detect_exit == 0 )); then
+    ok "Claude App already installed on $REPO — nothing to do"
+    echo "  ($detect_result)"
+  elif (( detect_exit == 2 )); then
+    warn "Could not check (gh API error). $detect_result"
+    if (( DRY == 0 )); then
+      [[ "$(ask 'Continue anyway?' 'n')" =~ ^[Yy] ]] || err "Aborted."
     fi
+  else
+    # exit 1: not detected. Could be truly not installed, or installed-but-no-new-push-since.
+    warn "Claude App NOT detected on $REPO via check_suites side-channel."
+    echo "  $detect_result"
     echo ""
-    echo "  Note: the GitHub REST API does NOT let user tokens check App installs,"
-    echo "  so this script cannot auto-verify. After you finish the install + see"
-    echo "  $REPO in https://github.com/settings/installations under 'Claude',"
-    echo "  press Enter to continue."
+    echo "  Two likely causes:"
+    echo "    (a) The App isn't installed for this account/repo yet."
+    echo "        Fix: visit https://github.com/apps/claude → Install."
+    echo "    (b) You installed it AFTER your last push. The check_suite is"
+    echo "        created per-commit-at-push-time and isn't backfilled. We'll"
+    echo "        push workflow YAMLs in Step 5; this script auto-rechecks then."
     echo ""
-    read -r -p "$(printf '\033[1;35m?\033[0m Confirmed installed on %s? Press Enter (or Ctrl+C to abort)... ' "$REPO")"
-    ok "Trusting user confirmation that Claude App is installed on $REPO"
-    echo "  (If you got this wrong, the first PR's auto-review will fail and tell you.)"
+    echo "  Configure page (manage which repos Claude can access):"
+    echo "    https://github.com/settings/installations"
+    echo ""
+    if (( DRY == 0 )); then
+      if [[ "$(ask 'Open the install page in your browser?' 'y')" =~ ^[Yy] ]]; then
+        open  "https://github.com/apps/claude" 2>/dev/null || \
+        xdg-open "https://github.com/apps/claude" 2>/dev/null || \
+          echo "  (could not auto-open; visit manually)"
+      fi
+      echo ""
+      echo "  After you've installed the App on $REPO (or confirmed it covers this repo),"
+      echo "  press Enter to re-detect. If still not detected, we continue anyway and"
+      echo "  re-verify after Step 5 push."
+      read -r -p "$(printf '\033[1;35m?\033[0m Press Enter to re-check... ')"
+
+      # Re-detect once
+      detect_result=$(bash "$SCRIPT_DIR_THIS/check-claude-app.sh" "$REPO" 2>&1)
+      if (( $? == 0 )); then
+        ok "Re-check passed: $detect_result"
+      else
+        warn "Still not detected. Proceeding; Step 5 will push workflow YAMLs and"
+        warn "re-verify on the new commit. If it's still missing then, App is genuinely"
+        warn "not installed on this repo — fix that before triggering a PR."
+      fi
+    fi
   fi
 else
-  warn "--skip-app-install: skipping App install step (assuming it's already done)"
+  warn "--skip-app-install: skipping App detection (assuming it's installed)"
 fi
 
 # ---- Step 2.5: Pick review provider (BEFORE secrets so we only set what's needed) ----
