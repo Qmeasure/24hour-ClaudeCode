@@ -49,8 +49,18 @@ Triggered by the user manually, not by a hook.
                               ▼
    scripts/configure-actions.sh:
      1. Verify gh / claude / git installed + authenticated (workflow scope)
-     2. Open https://github.com/apps/claude → user installs App
-     3. Run `claude setup-token` → save to `CLAUDE_CODE_OAUTH_TOKEN` secret
+     2. Auto-detect Claude App on this repo via `scripts/check-claude-app.sh`
+        (check_suites side-channel: `gh api repos/.../commits/.../check-suites`
+        returns 200 for user-PAT and lists every App with checks:write installed
+        on the repo. App.slug == "claude" && App.owner == "anthropics" → installed.)
+        If not detected, open https://github.com/apps/claude in the browser,
+        wait for user, re-detect.
+     3. Detect `CLAUDE_CODE_OAUTH_TOKEN` secret via
+        `scripts/check-secret.sh` (precise probe:
+        `gh api repos/.../actions/secrets/<NAME>` returns 200 if set, 404 if not).
+        If missing, print the 2 CLI commands (claude setup-token + gh secret set)
+        in a boxed block for the user to run in their terminal; wait for Enter;
+        re-verify. The script does NOT invoke these interactive commands itself.
      4. Run scripts/detect-project.sh:
           • project type (node/python/go/rust/...)
           • base branch

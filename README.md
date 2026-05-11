@@ -136,8 +136,14 @@ The wizard does the rest. **Every step asks for confirmation; nothing happens wi
    - ✅ You already have a GitHub repo connected → continues automatically.
    - ⚠️ Local git repo but **no GitHub remote** → wizard offers to run `gh repo create` for you (it'll ask name / public-or-private / push). Pick "yes" to create + push in one go.
    - ⚠️ Folder isn't even a git repo yet → wizard offers `git init -b main` + initial commit. You'll need files to commit (a README is enough).
-3. **Install the Claude review bot** — browser opens to https://github.com/apps/claude. You click "Install" and pick this repo.
-4. **Generate an OAuth token** from your Claude subscription, save it as `CLAUDE_CODE_OAUTH_TOKEN` in your GitHub repo's secrets.
+3. **Verify the Claude review bot is installed** — auto-detects via the `check_suites` side-channel (no clicks needed if the App is already installed account-wide, which is the common case). If not detected, the wizard prints the install URL and waits for you to add it.
+4. **Set the `CLAUDE_CODE_OAUTH_TOKEN` secret** — the wizard *cannot* run this automatically (both `claude setup-token` and `gh secret set` are interactive — browser OAuth + paste). Instead it **prints the exact 2 CLI commands** for you to run in your terminal, then re-verifies. The exact commands the wizard gives you:
+   ```bash
+   # in your terminal — DO NOT paste the token into chat
+   claude setup-token                                              # OAuth → prints sk-ant-oat01-...
+   gh secret set CLAUDE_CODE_OAUTH_TOKEN -R <owner>/<repo>          # paste at prompt
+   ```
+   Then press Enter back in the wizard; it confirms via `gh api repos/<repo>/actions/secrets/CLAUDE_CODE_OAUTH_TOKEN` (200=set, 404=missing).
 5. **Auto-detect** your test / lint / build commands.
 6. **Ask** which AI reviews PRs: Claude / OpenAI Codex / both.
 7. **Generate workflow YAMLs** tailored to your stack → commit + push to `main`.

@@ -49,8 +49,17 @@ Hook 输出格式(参 Claude Code 官方规范):
                               ▼
    scripts/configure-actions.sh:
      1. 验证 gh / claude / git 已装且已登录(workflow scope)
-     2. 浏览器打开 https://github.com/apps/claude → 用户安装 App
-     3. 跑 `claude setup-token` → 写到 `CLAUDE_CODE_OAUTH_TOKEN` secret
+     2. 通过 `scripts/check-claude-app.sh` 自动检测 Claude App 是否装在该 repo
+        (check_suites 侧信道:`gh api repos/.../commits/.../check-suites` 用
+        user-PAT 可调,返回的列表包含每个装在 repo 且有 checks:write 权限的 App。
+        若 App.slug == "claude" && App.owner == "anthropics",即已安装。)
+        没检测到才打开 https://github.com/apps/claude 让用户装,等待回来重检。
+     3. 通过 `scripts/check-secret.sh` 精准探针验证 `CLAUDE_CODE_OAUTH_TOKEN`
+        (`gh api repos/.../actions/secrets/<NAME>` 返回 200 = 已设,404 = 未设)。
+        未设时,脚本**不会**自动跑 `claude setup-token` 或 `gh secret set` —
+        这两个命令都是交互式的(浏览器 OAuth + 终端粘贴),脚本驱动不了。改为
+        在 box 框里打印精确的 2 条 CLI 命令让用户在自己终端跑,跑完按 Enter
+        回脚本自动重新验证。
      4. 跑 scripts/detect-project.sh:
           • 项目类型(node/python/go/rust/...)
           • base 分支

@@ -136,8 +136,14 @@ claude
    - ✅ 已经连好 GitHub repo → 直接继续。
    - ⚠️ 本地有 git repo 但**没接 GitHub 远端** → 向导帮你跑 `gh repo create`(它会问你 repo 名 / 公开私有 / 是否 push)。选"是"一步到位。
    - ⚠️ 当前目录根本不是 git repo → 向导帮你 `git init -b main` + 创建首个 commit(你得至少有一个文件可 commit,加个 README 就够了)。
-3. **装 Claude 审核机器人** —— 浏览器打开 https://github.com/apps/claude,你点 Install 选这个 repo。
-4. **生成 OAuth token** —— 用你的 Claude 订阅生成,自动存到这个 repo 的 GitHub Secrets 里(`CLAUDE_CODE_OAUTH_TOKEN`)。
+3. **验证 Claude 审核机器人已安装** —— 通过 `check_suites` 侧信道自动检测(常见情况:你 GitHub 账号已经"全 repo 装"过,直接跳过)。没检测到才会打开 install 页面让你装。
+4. **设置 `CLAUDE_CODE_OAUTH_TOKEN` secret** —— 向导**无法**自动跑这步(`claude setup-token` 是浏览器 OAuth 交互、`gh secret set` 是 paste 提示,都需要你的终端)。向导会**打印精确的 2 条 CLI 命令**让你在终端跑,跑完按 Enter 回向导,自动验证。向导给你的具体命令:
+   ```bash
+   # 在你的终端里跑 —— 千万不要把 token 粘到聊天框
+   claude setup-token                                              # OAuth → 终端打印 sk-ant-oat01-...
+   gh secret set CLAUDE_CODE_OAUTH_TOKEN -R <owner>/<repo>          # 在 paste 提示里粘 token
+   ```
+   然后按 Enter 回向导,它会用 `gh api repos/<repo>/actions/secrets/CLAUDE_CODE_OAUTH_TOKEN` 精确探针验证(200=已设,404=没设)。
 5. **自动识别** test / lint / build 命令。
 6. **询问** 哪个 AI 来审 PR:Claude / OpenAI Codex / 两个都要。
 7. **生成 workflow YAML** —— 按你项目特点定制 → commit + push 到 `main`。
