@@ -188,6 +188,20 @@ jobs:
         with:
           fetch-depth: 1
 
+      # Load the user-tunable prompt body from .claude/24hour-ClaudeCode/review-prompt.md
+      # (rendered by scripts/render-workflows.sh during onboarding, edit freely).
+      # If the file is missing — e.g. user deleted it or it never reached the default
+      # branch — fall back to a minimal generic instruction.
+      - name: Load review prompt
+        id: prompt
+        run: |
+          PROMPT_FILE=".claude/24hour-ClaudeCode/review-prompt.md"
+          if [ -f "\$PROMPT_FILE" ]; then
+            { echo 'body<<__EOF__'; cat "\$PROMPT_FILE"; echo; echo '__EOF__'; } >> "\$GITHUB_OUTPUT"
+          else
+            echo 'body=Apply general code-review best practices: cite file:line, group findings by severity (Reject/Major/Minor/Nit), be concise. No project-specific prompt file was found at .claude/24hour-ClaudeCode/review-prompt.md.' >> "\$GITHUB_OUTPUT"
+          fi
+
       - uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: \${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -196,25 +210,7 @@ jobs:
           prompt: |
             /code-review:code-review \${{ github.repository }}/pull/\${{ github.event.pull_request.number }}
 
-            Project context (auto-detected at workflow render time):
-            - Type: $PROJECT_TYPE
-            - Base branch: $BASE_BRANCH
-            - Monorepo: $IS_MONOREPO
-            - Repo size: $REPO_SIZE
-            - Package manager: ${PACKAGE_MANAGER:-n/a}
-
-            Review priorities (in order):
-$(build_review_priorities)
-
-            Project style guides to honor (if mentioned, read the top of these files
-            before commenting; quoted rules are hard constraints):
-$(build_style_guide_lines)
-
-            Output rules:
-            - Cite file:line for every issue.
-            - Group findings by severity: Reject (blocks merge) / Major / Minor / Nit.
-            - Skip trivial nits if the PR is large; lead with structural issues.
-            - Be concise. No preamble. No "great work!" filler.
+            \${{ steps.prompt.outputs.body }}
           claude_args: |
             --max-turns $REVIEW_MAX_TURNS
             --model $REVIEW_MODEL

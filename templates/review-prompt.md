@@ -1,8 +1,8 @@
 # PR Review Prompt — 24hour-ClaudeCode
 
-This file is rendered into `<project>/.claude/24hour-ClaudeCode/review-prompt.md` at onboarding time, with project-specific substitutions. It's the prompt the review GitHub Action passes to Claude Code Action / Codex Actions when reviewing PRs.
+Rendered into `<project>/.claude/24hour-ClaudeCode/review-prompt.md` at onboarding time with project-specific substitutions. **Both** `claude-code-review.yml` and `codex-review.yml` load this file via `cat` at workflow runtime and pass its body to the review action as `prompt:`. This is the single source of truth for review behavior.
 
-**Edit this file freely** to tune review depth, focus, or tone for your project. Workflow YAMLs read it via `cat` at action runtime — no re-render needed.
+**Edit this file freely** to tune review depth, focus, or tone for your project. Changes apply to the next PR — no re-render of workflow YAMLs needed.
 
 ---
 
