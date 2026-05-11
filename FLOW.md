@@ -469,7 +469,6 @@ Enforced by `scripts/check-stop-conditions.sh` (in pre-PR branch) and `scripts/d
 | Branch is protected | `stop:protected_branch` | check-stop-conditions.sh |
 | `gh auth status` fails | `stop:gh_auth_lost` | check-stop-conditions.sh |
 | `git push` rejected | `stop:push_rejected` | stop.sh (push step) |
-| Diff exceeds `max_diff_lines` (default 500) | `stop:diff_too_large` | check-stop-conditions.sh |
 | Edit touches `danger_paths` | `stop:danger_path` | stop.sh (via detect-changes.sh) |
 
 When any fires:

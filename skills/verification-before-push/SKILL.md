@@ -57,11 +57,7 @@ If any match:
 git diff origin/<base-branch>...HEAD --shortstat
 ```
 
-If the line count exceeds `config.repair.max_diff_lines` (default 500), `check-stop-conditions.sh` will fire `stop:diff_too_large`. Stop and split into multiple PRs:
-
-- One PR for the schema/migration change
-- One PR for the code that uses the new schema
-- Sequenced via Expand → Migrate → Contract pattern (see `references/anti-patterns.md` E)
+The plugin no longer caps diff size — the auto-review action will flag oversized PRs at review time. But if you're crossing module boundaries (e.g. schema migration + code that uses it), splitting into sequential PRs (Expand → Migrate → Contract, see `references/anti-patterns.md` E) is still better for reviewability.
 
 ### 5. Project local checks pass
 

@@ -121,19 +121,6 @@ Options:
   2. If branch protection is the issue: ask the user to grant push access, or PR to a different branch.
 ```
 
-### `stop:diff_too_large`
-
-```
-⚠️ PR diff exceeds <max_diff_lines> lines (currently <actual>).
-
-The repair loop appears to be expanding scope rather than narrowing.
-
-Options:
-  1. Take over manually and split: revert the latest unrelated changes; keep only the originally-intended scope.
-  2. Increase max_diff_lines in .claude/24hour-ClaudeCode.config.json (only if the original feature genuinely needs that scope).
-  3. Open a fresh PR with just the focused changes; abandon this one.
-```
-
 ### `stop:preflight_closed`
 
 ```

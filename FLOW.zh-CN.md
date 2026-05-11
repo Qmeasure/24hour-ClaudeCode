@@ -464,7 +464,6 @@ Claude 看到成功消息;用户的任务完成。
 | 当前在受保护分支 | `stop:protected_branch` | check-stop-conditions.sh |
 | `gh auth status` 失败 | `stop:gh_auth_lost` | check-stop-conditions.sh |
 | `git push` 被拒 | `stop:push_rejected` | stop.sh(push 步骤) |
-| diff 超过 `max_diff_lines`(默认 500) | `stop:diff_too_large` | check-stop-conditions.sh |
 | 编辑命中 `danger_paths` | `stop:danger_path` | stop.sh(via detect-changes.sh) |
 
 任一触发时:

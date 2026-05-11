@@ -9,7 +9,7 @@
 #   stop:gh_auth_lost                 exit 13
 #   stop:push_rejected                exit 14
 #   stop:user_judgement               exit 15
-#   stop:diff_too_large               exit 16
+#   (exit 16 was stop:diff_too_large — removed; we don't cap diff size)
 #   stop:danger_path                  exit 17
 #   stop:preflight_closed             exit 18  (raised by stop.sh, not here — reserved)
 #   stop:committed_workflow_changes   exit 19  (raised by stop.sh, not here — reserved)
@@ -32,12 +32,10 @@ cd "$PROJECT_DIR"
 # Default config values
 max_iterations=5
 stop_on_repeated_failure="true"
-max_diff_lines=500
 
 if [[ -f "$CONFIG_FILE" ]]; then
   max_iterations=$(jq -r '.repair.max_iterations // 5' "$CONFIG_FILE")
   stop_on_repeated_failure=$(jq -r '.repair.stop_on_repeated_failure // true' "$CONFIG_FILE")
-  max_diff_lines=$(jq -r '.repair.max_diff_lines // 500' "$CONFIG_FILE")
 fi
 
 iteration=0
@@ -87,26 +85,12 @@ if ! gh auth status >/dev/null 2>&1; then
   exit 13
 fi
 
-# 5. Diff too large — runaway-repair guard.
-#
-# This guard's documented intent (skills/using-24hour-ClaudeCode/SKILL.md:175):
-#   "Diff exceeds max_diff_lines (default 500) — likely runaway repair. Escalate."
-#
-# It is supposed to catch the case where Claude, in a rework loop, keeps growing
-# the diff instead of converging on a fix. It is NOT supposed to second-guess
-# the developer's first-time feature commit.
-#
-# Earlier versions checked unconditionally and blocked legitimate first commits
-# (e.g. 818-line new module on iteration=0). Now we only check on rework
-# rounds (iteration >= 1) and respect max_diff_lines <= 0 as "disabled".
-if (( iteration >= 1 )) && (( max_diff_lines > 0 )); then
-  diff_lines=$(git diff --shortstat 2>/dev/null | grep -oE '[0-9]+' | head -2 | paste -sd+ - | bc 2>/dev/null || echo 0)
-  diff_lines=${diff_lines:-0}
-  if (( diff_lines > max_diff_lines )); then
-    echo "stop:diff_too_large"
-    exit 16
-  fi
-fi
+# 5. (Removed) Diff-size guard.
+# Used to fire stop:diff_too_large when working-tree diff exceeded
+# repair.max_diff_lines. Removed because (a) the developer's first commit can
+# legitimately be large for a new module, and (b) review-time judgement —
+# which the auto-review action already does — is the right place to flag
+# oversized changes, not pre-commit static threshold.
 
 echo "continue"
 exit 0

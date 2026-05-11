@@ -142,16 +142,6 @@ The exception: when amending a placeholder commit (Mode 1), `git push --force-wi
 - ❌ Plain `git push --force` — always `--force-with-lease`
 - ❌ Skipping the local verify between items — silently breaking adjacent items is the #1 cause of `stop:repeated_failure`
 
-## Diff size discipline
-
-If your fix made the PR diff exceed `config.repair.max_diff_lines` (default 500), check-stop-conditions will fire `stop:diff_too_large` on the next on-edit cycle. Before that happens:
-
-```bash
-git diff origin/<base-branch>...HEAD --stat | tail -1   # last line: total summary
-```
-
-If you're approaching the limit, stop and split. Don't try to slip a 1000-line PR through.
-
 ## Hand-off after rework
 
 After push:

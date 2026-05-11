@@ -172,7 +172,7 @@ Only these reasons authorize the loop to stop. Anything else, you continue.
 6. **Reviewer asks you to edit a `danger_paths` entry** — migrations, infra, .env.production, secrets dirs. Off-limits without explicit user approval.
 7. **Same failure two iterations in a row** (`stop:repeated_failure`) — you're stuck. Escalate.
 8. **`max_iterations` (default 5) hit** — `stop:max_iterations`. Escalate with timeline.
-9. **Diff exceeds `max_diff_lines`** (default 500) — **only enforced on rework iterations (≥1), not on the developer's first commit.** Designed to catch runaway repair loops (Claude keeps growing diff instead of converging). Set `max_diff_lines: 0` in config to disable entirely.
+9. (Removed) Diff-size guard. The plugin no longer caps PR diff size — the auto-review action handles oversized-change judgement at review time, not via a pre-commit threshold.
 10. **Preflight PR closed without merging** (`stop:preflight_closed`) — the workflow-only auto-split PR was closed by user or required check failed. Escalate; ask user to reopen, override, or revert the workflow changes.
 
 When a stop fires, invoke `failure-escalation` to format the user-facing message. The runtime keeps a complete event timeline in `<runtime>/last-run.json` — cite it.
