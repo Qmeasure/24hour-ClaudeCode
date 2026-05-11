@@ -525,27 +525,65 @@ if [[ "$PROVIDER" == "codex" || "$PROVIDER" == "both" ]]; then
   fi
 fi
 
-# ---- Step 5: Commit + push ----
-say "Step 5: Commit + push workflow files"
-if git status --porcelain .github/workflows | grep -q '.'; then
+# ---- Step 5: Commit + push (workflows + tailored review prompt) ----
+#
+# CRITICAL: render-workflows.sh writes BOTH:
+#   1. .github/workflows/*.yml (varies by provider + include-ci)
+#   2. .claude/24hour-ClaudeCode/review-prompt.md (ALWAYS — used by the
+#      Action at runtime; without it on the default branch, the runner's
+#      checkout has no project-tailored prompt and Claude review uses the
+#      one-line fallback embedded in the YAML).
+#
+# Previous versions of this script hardcoded `git add .github/workflows/claude.yml
+# .github/workflows/claude-code-review.yml` and silently dropped:
+#   - review-prompt.md (regression: tailored prompt never reached GitHub)
+#   - codex-review.yml (regression: provider=codex/both didn't push the codex YAML)
+#   - ci.yml          (regression: --include-ci didn't push the CI YAML)
+# This step now enumerates the exact files Step 4 generated.
+say "Step 5: Commit + push generated files"
+
+files_to_commit=()
+# Tailored review prompt — render-workflows.sh always emits this regardless of provider.
+[[ -f .claude/24hour-ClaudeCode/review-prompt.md ]] && \
+  files_to_commit+=(".claude/24hour-ClaudeCode/review-prompt.md")
+# Workflow YAMLs, picked by provider + include-ci to match what Step 4 chose.
+if [[ "$PROVIDER" == "claude" || "$PROVIDER" == "both" ]]; then
+  [[ -f .github/workflows/claude.yml ]] && \
+    files_to_commit+=(".github/workflows/claude.yml")
+  [[ -f .github/workflows/claude-code-review.yml ]] && \
+    files_to_commit+=(".github/workflows/claude-code-review.yml")
+fi
+if [[ "$PROVIDER" == "codex" || "$PROVIDER" == "both" ]]; then
+  [[ -f .github/workflows/codex-review.yml ]] && \
+    files_to_commit+=(".github/workflows/codex-review.yml")
+fi
+(( INCLUDE_CI == 1 )) && [[ -f .github/workflows/ci.yml ]] && \
+  files_to_commit+=(".github/workflows/ci.yml")
+
+if (( ${#files_to_commit[@]} == 0 )); then
+  warn "Step 5: no Step-4-generated files found on disk. Did render-workflows.sh fail?"
+elif git status --porcelain "${files_to_commit[@]}" 2>/dev/null | grep -q '.'; then
   if (( DRY == 0 )); then
-    echo "  Pending changes in .github/workflows. Suggested:"
+    echo "  Files to commit:"
+    for f in "${files_to_commit[@]}"; do echo "    - $f"; done
     echo ""
-    echo "    git add .github/workflows/claude.yml .github/workflows/claude-code-review.yml"
-    echo "    git commit -m 'Add Claude Code Actions workflows'"
+    echo "  Suggested commands:"
+    echo "    git add ${files_to_commit[*]}"
+    echo "    git commit -m 'Add Claude Code Actions workflows + tailored review prompt'"
     echo "    git push"
     echo ""
     if [[ "$(ask 'Run these now?' 'y')" =~ ^[Yy] ]]; then
-      git add .github/workflows/claude.yml .github/workflows/claude-code-review.yml
-      git commit -m "Add Claude Code Actions workflows"
+      git add -- "${files_to_commit[@]}"
+      git commit -m "Add Claude Code Actions workflows + tailored review prompt"
       git push 2>/dev/null || warn "Push failed (no upstream?). Run 'git push -u origin <branch>' manually"
-      ok "Pushed"
+      ok "Pushed: ${files_to_commit[*]}"
     else
-      warn "Don't forget to push manually before opening a PR"
+      warn "Don't forget to git add + commit + push manually before opening a PR."
+      warn "If you skip review-prompt.md, the review will use a generic fallback prompt."
     fi
   fi
 else
-  ok "Workflow files already committed + pushed"
+  ok "All Step-4 files already committed: ${files_to_commit[*]}"
 fi
 
 # ---- Step 6: Health check ----
