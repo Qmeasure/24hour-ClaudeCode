@@ -38,11 +38,17 @@ cd "$PROJECT_DIR"
 # Helpers
 # ============================================================================
 
-# Emit additionalContext (informational) and exit 0.
+# Emit an informational message to the user and exit 0.
+#
+# IMPORTANT: Stop hook's JSON output schema does NOT accept
+# hookSpecificOutput.additionalContext (that field is for PreToolUse /
+# UserPromptSubmit / PostToolUse / PostToolBatch only). Stop's only
+# user-facing message channel is the top-level `systemMessage` field.
+# Earlier versions of this script copied SessionStart's emit format and
+# triggered "Hook JSON output validation failed" on every run.
 emit_info() {
   local content="$1"
-  jq -n --arg ctx "$content" \
-    '{hookSpecificOutput:{hookEventName:"Stop",additionalContext:$ctx}}'
+  jq -n --arg msg "$content" '{systemMessage:$msg}'
   release_lock
   exit 0
 }
