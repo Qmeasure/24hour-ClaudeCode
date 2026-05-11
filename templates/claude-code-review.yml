@@ -35,7 +35,7 @@ jobs:
       id-token: write       # OIDC(必需)
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 1
 

@@ -184,7 +184,7 @@ jobs:
       id-token: write       # OIDC
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 1
 
@@ -296,7 +296,7 @@ jobs:
       id-token: write       # OIDC
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0    # full history for blame/log
 
@@ -396,7 +396,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
 $setup_block
 
@@ -444,7 +444,7 @@ jobs:
       id-token: write
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 1
           ref: refs/pull/\${{ github.event.pull_request.number }}/merge
