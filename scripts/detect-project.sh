@@ -274,9 +274,13 @@ fi
 # Strip newlines/tabs so it stays a one-liner inside YAML
 REPO_DESCRIPTION=$(printf '%s' "$REPO_DESCRIPTION" | tr -s '\n\t ' ' ' | sed -E 's/^ +| +$//g')
 
-# Top-level dirs (filter out build/cache/vendor/test-output)
+# Top-level dirs (filter out build/cache/vendor/test-output).
+# `for d in */` does NOT expand to nothing when no dirs exist — it leaves the
+# literal "*". Guard with `[[ -d ]]` so empty repos get TOP_DIRS=() instead of
+# TOP_DIRS=("*") which leaked into rendered prompts as a garbage line.
 TOP_DIRS=()
 for d in */; do
+  [[ -d "$d" ]] || continue
   d="${d%/}"
   case "$d" in
     node_modules|dist|build|.next|coverage|target|__pycache__|.venv|venv|.tox|.cache|.idea|.vscode|tmp|vendor|bin|out|.git|.github) continue ;;

@@ -209,11 +209,37 @@ jobs:
 $([[ ${#DANGER_PATHS[@]} -gt 0 ]] && printf '              - %s\n' "${DANGER_PATHS[@]}" || echo "              (none configured)")
             Review priorities (in order, applied to THIS repo's structure):
 $(build_review_priorities)
+
+            Senior reviewer discipline (apply throughout, not just on a first pass):
+            - Architecture fit: does the change live in the right layer / module? Does it follow existing patterns or contradict them silently? Flag silent precedent breaks.
+            - Scope discipline: is this PR doing ONE thing, or sneaking in unrelated refactors? Call out scope creep — request a split if structural changes ride along with the stated fix.
+            - Test quality (not just presence): do tests assert BEHAVIOR (inputs → outputs / side effects) or implementation (mocks of internals)? Are boundary, error, empty, and concurrent cases covered? Are tests deterministic — no time / order / network dependencies?
+            - Failure modes: what happens when network / DB / external dep fails? Are retries idempotent + bounded? Timeouts set? Is degradation graceful, or does one failure cascade?
+            - Concurrency hazards: shared state, race conditions, transaction isolation, async deadlock paths, async cancellation safety. Flag any new shared mutable state without a clear owner.
+            - API contracts: any breaking change to public APIs, types, wire formats, CLI flags, env vars, or stored data shapes? Is there a migration story (and a rollback)?
+            - Performance regressions: O(N²) loops added, N+1 queries, allocations in hot paths, cache invalidation correctness. Spot-check loops over external collections.
+            - Observability gap: are new code paths logged / metered / traceable so a future on-call can debug from prod data alone? Errors without context are not loggable.
+            - Security beyond input validation: secrets in logs / error messages, authorization checked at every boundary (NOT just authentication), PII handling, TOCTOU windows, SSRF on outbound requests.
+            - Root cause vs symptom: does this fix the root cause, or paper over a symptom that will recur elsewhere? If the fix is local but the bug class is general, flag it.
+
+            Reading order (use it — don't review top-to-bottom by file):
+            - Skim the diff for SHAPE first: which files, which layers. Flag if shape sprawls beyond the PR title's promise.
+            - Read tests BEFORE implementation — tests are the spec.
+            - Read implementation last; verify it matches the test's intent.
+            - Pause and zoom on every line that touches: auth, money, time / dates, external IO, regex, concurrency primitives, migrations.
+            - If the diff is "remove and rewrite", \`git blame\` the deleted block to see what edge cases were addressed historically. The new version must cover them.
+
+            Self-check before posting comments:
+            - "If the author left tomorrow, could a new dev maintain this?" — if no, that's a Major.
+            - "What is the worst case if this fails in prod at 3am?" — if you can't answer, request observability or a guardrail.
+            - "Have I considered the inverse case?" (empty input, max input, hostile input, already-applied state)
+            - "Is this comment actionable as-is, or vague?" If vague, rewrite with file:line + the specific change you want.
+
             Output rules:
             - Cite file:line for every issue. Anchor on entry points and top-level dirs above when applicable.
             - Group findings by severity: Reject (blocks merge) / Major / Minor / Nit.
             - Skip trivial nits if the PR is large; lead with structural concerns that align or conflict with the repo summary above.
-            - Be concise. No preamble. No "great work!" filler.
+            - Be concise. No preamble. No "great work!" filler. State the issue, the impact, the suggested change.
           claude_args: |
             --max-turns $REVIEW_MAX_TURNS
             --model $REVIEW_MODEL
@@ -451,11 +477,28 @@ jobs:
 $([[ ${#DANGER_PATHS[@]} -gt 0 ]] && printf '              - %s\n' "${DANGER_PATHS[@]}" || echo "              (none configured)")
             Review priorities (in order, applied to THIS repo's structure):
 $(build_review_priorities)
+
+            Senior reviewer discipline:
+            - Architecture fit: change in right layer / module? Follows existing patterns or contradicts silently?
+            - Scope discipline: PR doing ONE thing? Flag scope creep.
+            - Test quality: behavior vs implementation? Boundary / error / empty / concurrent cases? Deterministic?
+            - Failure modes: network / DB / external fail → retries idempotent + bounded? Timeouts? Graceful degradation?
+            - Concurrency: shared mutable state, race conditions, transaction isolation, async cancellation.
+            - API contracts: breaking changes to public APIs / wire formats / stored data? Migration + rollback?
+            - Performance: O(N²), N+1 queries, hot-path allocations, cache invalidation.
+            - Observability: new paths logged / metered for prod debugging?
+            - Security beyond input validation: secrets in logs, authorization at every boundary, PII, TOCTOU.
+            - Root cause vs symptom: does it fix the underlying issue or paper over it?
+
+            Reading order: skim diff for shape → read tests (the spec) → read implementation → zoom on auth / money / time / IO / regex / concurrency / migrations.
+
+            Self-check before posting: actionable as-is? worst-case-at-3am answerable? inverse case considered?
+
             Output rules:
             - Cite file:line for every issue. Anchor on entry points and top-level dirs above.
             - Group findings by severity: Reject (blocks merge) / Major / Minor / Nit.
             - Skip trivial nits if the PR is large; lead with structural concerns.
-            - Be concise. No preamble.
+            - Be concise. No preamble. State issue + impact + suggested change.
 
       - name: Post review as PR comment
         if: \${{ steps.run_codex.outputs.final-message != '' }}
