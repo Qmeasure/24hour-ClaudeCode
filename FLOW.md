@@ -35,7 +35,7 @@ Triggered by the user manually, not by a hook.
 ```
 ┌─ User runs in any project ──────────────────────────────────────────┐
 │  /plugin marketplace add Qmeasure/24hour-ClaudeCode                 │
-│  /plugin install 24hour-ClaudeCode@qmeasure-plugins                 │
+│  /plugin install 24hour-ClaudeCode@24hour-ClaudeCode                 │
 └─────────────────────────────────────────────────────────────────────┘
                               │
                               ▼

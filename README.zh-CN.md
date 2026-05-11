@@ -67,16 +67,16 @@
 **一行命令(shell,推荐):**
 
 ```bash
-claude plugin marketplace add Qmeasure/24hour-ClaudeCode && claude plugin install 24hour-ClaudeCode@qmeasure-plugins
+claude plugin marketplace add Qmeasure/24hour-ClaudeCode && claude plugin install 24hour-ClaudeCode@24hour-ClaudeCode
 ```
 
-在终端里跑这一行,然后 `claude plugin list` 确认 `24hour-ClaudeCode@qmeasure-plugins` 是 `enabled`。
+在终端里跑这一行,然后 `claude plugin list` 确认 `24hour-ClaudeCode@24hour-ClaudeCode` 是 `enabled`。
 
 **或者在 Claude Code 里(斜杠命令,两行):**
 
 ```
 /plugin marketplace add Qmeasure/24hour-ClaudeCode
-/plugin install 24hour-ClaudeCode@qmeasure-plugins
+/plugin install 24hour-ClaudeCode@24hour-ClaudeCode
 ```
 
 每行各回车一次——slash 命令只能一条一条跑,**不能像 shell 那样用 `&&` 串起来**。

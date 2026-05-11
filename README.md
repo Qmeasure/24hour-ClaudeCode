@@ -67,16 +67,16 @@ You only do this once for each project. After setup, the plugin works automatica
 **One line (shell, recommended):**
 
 ```bash
-claude plugin marketplace add Qmeasure/24hour-ClaudeCode && claude plugin install 24hour-ClaudeCode@qmeasure-plugins
+claude plugin marketplace add Qmeasure/24hour-ClaudeCode && claude plugin install 24hour-ClaudeCode@24hour-ClaudeCode
 ```
 
-Run this in your terminal, then `claude plugin list` to confirm `24hour-ClaudeCode@qmeasure-plugins` is `enabled`.
+Run this in your terminal, then `claude plugin list` to confirm `24hour-ClaudeCode@24hour-ClaudeCode` is `enabled`.
 
 **Or inside Claude Code (slash commands, two lines):**
 
 ```
 /plugin marketplace add Qmeasure/24hour-ClaudeCode
-/plugin install 24hour-ClaudeCode@qmeasure-plugins
+/plugin install 24hour-ClaudeCode@24hour-ClaudeCode
 ```
 
 Press Enter after each line — slash commands run one at a time, you can't chain them with `&&`.
