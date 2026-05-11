@@ -565,19 +565,64 @@ if [[ "$mode" == "idle" || "$mode" == "ready_for_rework" ]]; then
     new_iter=1
   fi
 
-  # Initial poll (best-effort).
-  bash "$SCRIPTS/poll-github.sh" >/dev/null 2>&1 || true
-
-  # State transitions.
-  state_set mode "waiting_for_checks"
   state_set pr_number "$pr_num"
-  state_set last_status "committed"
   rm -f "$RUNTIME_DIR/dirty" 2>/dev/null
-
-  record_event "committed" "iter=$new_iter sha=$commit_sha pr=$pr_num"
 
   pr_url=""
   [[ -f "$RUNTIME_DIR/current-pr.json" ]] && pr_url=$(jq -r '.url // ""' "$RUNTIME_DIR/current-pr.json")
+
+  # Review-skippable PR detection.
+  #
+  # The rendered review workflows have `paths-ignore: ["**.md", "**/CHANGELOG*",
+  # "**/*.lock", ...]`, so PRs whose every changed file is in docs / lock /
+  # trivial buckets get NO review run — the action is filtered before launch.
+  # Without this short-circuit, the loop transitions to mode=waiting_for_checks,
+  # tells the user "CI starting", and stalls one Stop tick before realizing no
+  # workflow will ever fire. For doc-only PRs the right move is to enable
+  # auto-merge directly and skip the waiting state.
+  code_n=$(echo "$changes_json" | jq -r '.buckets.code | length')
+  workflow_n=$(echo "$changes_json" | jq -r '.buckets.workflow | length')
+  danger_n=$(echo "$changes_json" | jq -r '.buckets.danger | length')
+  secrets_n=$(echo "$changes_json" | jq -r '.buckets.secrets | length')
+
+  if (( code_n == 0 )) && (( workflow_n == 0 )) && (( danger_n == 0 )) && (( secrets_n == 0 )); then
+    # docs / lock / trivial only — review will be skipped by paths-ignore.
+    # Mark ready (if it was a draft) and enable auto-merge.
+    merge_method="merge"
+    [[ -f "$CONFIG_FILE" ]] && merge_method=$(jq -r '.github.merge_method // "merge"' "$CONFIG_FILE")
+
+    gh pr ready "$pr_num" >/dev/null 2>&1 || true   # noop if already ready
+    merge_out=$(gh pr merge "$pr_num" --auto "--$merge_method" 2>&1) || {
+      # --auto requires that some condition gate the merge (branch protection rules).
+      # If there are no required checks, try a direct merge.
+      merge_out=$(gh pr merge "$pr_num" "--$merge_method" 2>&1) || {
+        record_event "failed:merge-skip-review" "pr=$pr_num detail=$merge_out"
+        state_set mode "waiting_for_checks"
+        state_set last_status "committed"
+        record_event "committed" "iter=$new_iter sha=$commit_sha pr=$pr_num (merge-skip attempt failed; falling back)"
+        emit_info "$(printf '%s\n' \
+          "<24hour-ClaudeCode>" \
+          "PR #$pr_num is docs/lock/trivial only — tried to skip review and merge directly, but gh pr merge failed:" \
+          "$merge_out" \
+          "Falling back to the regular waiting_for_checks loop. Investigate the merge error.")"
+      }
+    }
+
+    state_set mode "merged"
+    state_set last_status "merged_no_review"
+    record_event "merged" "pr=$pr_num path=docs_only"
+    emit_info "$(printf '%s\n' \
+      "<24hour-ClaudeCode>" \
+      "✅ PR #$pr_num is docs/lock/trivial only — review skipped via paths-ignore." \
+      "$pr_url" \
+      "Auto-merge enabled (or merged directly). Cleanup happens on next stop.")"
+  fi
+
+  # Regular path: real code changes — go through waiting_for_checks.
+  bash "$SCRIPTS/poll-github.sh" >/dev/null 2>&1 || true
+  state_set mode "waiting_for_checks"
+  state_set last_status "committed"
+  record_event "committed" "iter=$new_iter sha=$commit_sha pr=$pr_num"
 
   msg=$(printf '%s\n' \
     "<24hour-ClaudeCode>" \
