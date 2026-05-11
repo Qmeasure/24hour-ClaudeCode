@@ -19,7 +19,9 @@ set -uo pipefail   # NOT -e: detection failures are normal; we always exit 0
 
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
-CONFIG_FILE="$PROJECT_DIR/.claude/24hour-ClaudeCode.config.json"
+# Resolve config path — local first, falling back to main checkout when inside
+# a worktree, so worktrees inherit main's onboarded config without re-onboarding.
+CONFIG_FILE=$(CLAUDE_PROJECT_DIR="$PROJECT_DIR" bash "$PLUGIN_ROOT/scripts/resolve-config-path.sh" 2>/dev/null || echo "$PROJECT_DIR/.claude/24hour-ClaudeCode.config.json")
 
 # ---- Helper: emit additionalContext JSON and exit ----
 emit() {
@@ -98,18 +100,14 @@ if [[ -f "$CONFIG_FILE" ]]; then
 fi
 
 # ---- 2. Decide which payload to emit ----
+#
+# Decision order matters. Onboarding check runs FIRST (before worktree/protected
+# dormant exits), because setup happens on the main checkout — workflow YAMLs
+# need to live on the default branch before GitHub Actions can authorize tokens.
+# If we exited dormant on a non-worktree main checkout, a new user with no
+# onboarding done would never be told to run `/24hour-ClaudeCode:setup`.
 
-# Branch A: not a worktree → dormant
-if (( in_worktree == 0 )); then
-  emit "[24hour-ClaudeCode] Dormant: not running inside a git worktree. The runtime engages only when you enter a worktree (\`git worktree add ../my-feature -b feat/my-feature\`)."
-fi
-
-# Branch B: protected branch → dormant
-if (( protected == 1 )); then
-  emit "[24hour-ClaudeCode] Dormant: current branch is protected (\`$branch\`). The runtime refuses to push to protected branches. Switch to a feature branch (\`git switch -c feat/...\`) before editing."
-fi
-
-# Branch C: onboarding incomplete → quote onboarding skill
+# Branch A: onboarding incomplete → quote onboarding skill (context-aware)
 if (( gh_ok == 0 )) || (( actions_deployed == 0 )) || (( config_present == 0 )); then
   missing=()
   (( gh_ok == 0 )) && missing+=("gh CLI not authenticated (run: gh auth login)")
@@ -123,6 +121,15 @@ if (( gh_ok == 0 )) || (( actions_deployed == 0 )) || (( config_present == 0 ));
     onboarding_body="(Onboarding skill not yet installed; see plugin scripts/configure-actions.sh.)"
   fi
 
+  # Context-aware location hint: setup must run on main checkout so workflow
+  # YAMLs land on the default branch first. Tell the user where they are and
+  # what to do next.
+  if (( in_worktree == 1 )); then
+    location_hint="You are currently inside a git worktree. Setup should be run from the **main checkout** so the workflow YAMLs are committed directly to the default branch (GitHub Actions can't authorize tokens until \`.github/workflows/claude*.yml\` exists on the default branch). Switch to your main checkout and run \`/24hour-ClaudeCode:setup\` there. If you must onboard from this worktree, your first PR will carry the workflow YAML changes and the runtime will auto-split them into a preflight PR — extra round-trip but it works."
+  else
+    location_hint="You are on the main checkout — this is the correct place to run setup. Run \`/24hour-ClaudeCode:setup\` now to complete onboarding before creating any worktree."
+  fi
+
   payload=$(cat <<EOF
 <EXTREMELY-IMPORTANT>
 The 24hour-ClaudeCode plugin is installed but onboarding is incomplete.
@@ -130,13 +137,25 @@ The 24hour-ClaudeCode plugin is installed but onboarding is incomplete.
 Missing:
 $(printf '  - %s\n' "${missing[@]}")
 
-Do NOT proceed with any code edit until onboarding is complete. Run \`/24hour-ClaudeCode:setup\` or invoke the github-actions-onboarding skill (content below).
+$location_hint
+
+Do NOT proceed with any code edit until onboarding is complete.
 </EXTREMELY-IMPORTANT>
 
 $onboarding_body
 EOF
 )
   emit "$payload"
+fi
+
+# Branch B: onboarded but not in a worktree → dormant
+if (( in_worktree == 0 )); then
+  emit "[24hour-ClaudeCode] Dormant: not running inside a git worktree. The runtime engages only when you enter a worktree (\`git worktree add ../my-feature -b feat/my-feature\`)."
+fi
+
+# Branch C: protected branch → dormant
+if (( protected == 1 )); then
+  emit "[24hour-ClaudeCode] Dormant: current branch is protected (\`$branch\`). The runtime refuses to push to protected branches. Switch to a feature branch (\`git switch -c feat/...\`) before editing."
 fi
 
 # Branch D: healthy → quote the runtime contract

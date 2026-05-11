@@ -20,7 +20,9 @@ PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
 RUNTIME_DIR="$PROJECT_DIR/.claude/runtime/24hour-ClaudeCode"
 FEEDBACK_FILE="$RUNTIME_DIR/feedback.json"
 STATE_FILE="$RUNTIME_DIR/state.json"
-CONFIG_FILE="$PROJECT_DIR/.claude/24hour-ClaudeCode.config.json"
+# Resolve config — worktree inherits main checkout's onboarded config.
+SCRIPT_DIR_FOR_CONFIG="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_FILE=$(CLAUDE_PROJECT_DIR="$PROJECT_DIR" bash "$SCRIPT_DIR_FOR_CONFIG/resolve-config-path.sh" 2>/dev/null || echo "$PROJECT_DIR/.claude/24hour-ClaudeCode.config.json")
 
 # ---- Helpers ----
 emit() {

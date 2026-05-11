@@ -12,10 +12,16 @@
 #       "docs":     [...],   # *.md, *.rst, *.txt
 #       "secrets":  [...],   # .env*, credentials/, **/secrets/**
 #       "workflow": [...],   # .github/workflows/**
+#       "trivial":  [...],   # .gitignore — too small to justify a PR/CI round-trip
 #       "danger":   [...]    # paths matching config.danger_paths globs
 #     },
 #     "danger_hit": ["<path>", ...]   # convenience: same as buckets.danger + buckets.secrets
 #   }
+#
+# Note on `trivial`: callers (e.g. stop.sh) should skip the whole commit/push/PR
+# pipeline when every changed file is trivial. Trivial files are STILL staged
+# and committed when they ride along with non-trivial changes — the bucket only
+# affects the "should we even start this round?" decision, not what gets staged.
 #
 # Reads config danger_paths from $CLAUDE_PROJECT_DIR/.claude/24hour-ClaudeCode.config.json
 # (falls back to skill default if config missing).
@@ -23,7 +29,9 @@
 set -euo pipefail
 
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
-CONFIG_FILE="$PROJECT_DIR/.claude/24hour-ClaudeCode.config.json"
+# Resolve config — worktree inherits main checkout's onboarded config.
+SCRIPT_DIR_FOR_CONFIG="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_FILE=$(CLAUDE_PROJECT_DIR="$PROJECT_DIR" bash "$SCRIPT_DIR_FOR_CONFIG/resolve-config-path.sh" 2>/dev/null || echo "$PROJECT_DIR/.claude/24hour-ClaudeCode.config.json")
 
 cd "$PROJECT_DIR"
 
@@ -32,7 +40,7 @@ cd "$PROJECT_DIR"
 files=$(git status --porcelain 2>/dev/null | awk '{ sub(/^...?/,""); print }' | sort -u)
 
 if [[ -z "$files" ]]; then
-  jq -n '{has_changes:false, files:[], buckets:{code:[],lock:[],docs:[],secrets:[],workflow:[],danger:[]}, danger_hit:[]}'
+  jq -n '{has_changes:false, files:[], buckets:{code:[],lock:[],docs:[],secrets:[],workflow:[],trivial:[],danger:[]}, danger_hit:[]}'
   exit 0
 fi
 
@@ -57,6 +65,8 @@ classify() {
       echo secrets ;;
     .github/workflows/*)
       echo workflow ;;
+    .gitignore|*/.gitignore)
+      echo trivial ;;
     *)
       echo code ;;
   esac
@@ -81,6 +91,7 @@ lock_arr='[]'
 docs_arr='[]'
 secrets_arr='[]'
 workflow_arr='[]'
+trivial_arr='[]'
 danger_arr='[]'
 
 while IFS= read -r path; do
@@ -93,6 +104,7 @@ while IFS= read -r path; do
     docs)     docs_arr=$(echo "$docs_arr"     | jq --arg p "$path" '. + [$p]') ;;
     secrets)  secrets_arr=$(echo "$secrets_arr"   | jq --arg p "$path" '. + [$p]') ;;
     workflow) workflow_arr=$(echo "$workflow_arr" | jq --arg p "$path" '. + [$p]') ;;
+    trivial)  trivial_arr=$(echo "$trivial_arr"  | jq --arg p "$path" '. + [$p]') ;;
   esac
 
   # Check danger_paths separately (orthogonal to bucket)
@@ -110,11 +122,12 @@ jq -n \
   --argjson files "$files_arr" \
   --argjson code "$code_arr" --argjson lock "$lock_arr" \
   --argjson docs "$docs_arr" --argjson secrets "$secrets_arr" \
-  --argjson workflow "$workflow_arr" --argjson danger "$danger_arr" \
+  --argjson workflow "$workflow_arr" --argjson trivial "$trivial_arr" \
+  --argjson danger "$danger_arr" \
   --argjson hit "$danger_hit" \
   '{
     has_changes: ($files | length > 0),
     files: $files,
-    buckets: {code:$code, lock:$lock, docs:$docs, secrets:$secrets, workflow:$workflow, danger:$danger},
+    buckets: {code:$code, lock:$lock, docs:$docs, secrets:$secrets, workflow:$workflow, trivial:$trivial, danger:$danger},
     danger_hit: $hit
   }'

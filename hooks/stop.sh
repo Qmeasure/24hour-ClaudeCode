@@ -28,7 +28,8 @@ PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && p
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
 SCRIPTS="$PLUGIN_ROOT/scripts"
 RUNTIME_DIR="$PROJECT_DIR/.claude/runtime/24hour-ClaudeCode"
-CONFIG_FILE="$PROJECT_DIR/.claude/24hour-ClaudeCode.config.json"
+# Resolve config — local first, main checkout fallback (so worktrees inherit main's onboarded config).
+CONFIG_FILE=$(CLAUDE_PROJECT_DIR="$PROJECT_DIR" bash "$SCRIPTS/resolve-config-path.sh" 2>/dev/null || echo "$PROJECT_DIR/.claude/24hour-ClaudeCode.config.json")
 
 mkdir -p "$RUNTIME_DIR"
 cd "$PROJECT_DIR"
@@ -385,6 +386,22 @@ if [[ "$mode" == "idle" || "$mode" == "ready_for_rework" ]]; then
   if [[ "$has_changes" != "true" ]]; then
     record_event "skipped" "detect-changes saw no real diff"
     rm -f "$RUNTIME_DIR/dirty" 2>/dev/null
+    exit 0
+  fi
+
+  # ---- Trivial-only diff: skip the round-trip ----
+  # When the only thing that changed is .gitignore (or other future trivial
+  # entries), there is no review value in opening a PR + waiting for CI +
+  # auto-merge. The user can either roll it into the next real edit or commit
+  # it manually. Clear the `dirty` marker so we don't keep re-checking.
+  total_files=$(echo "$changes_json" | jq -r '.files | length')
+  trivial_files=$(echo "$changes_json" | jq -r '.buckets.trivial | length')
+  if (( total_files > 0 )) && (( total_files == trivial_files )); then
+    trivial_list=$(echo "$changes_json" | jq -r '.buckets.trivial | join(", ")')
+    record_event "skipped" "trivial-only diff ($trivial_list) — not opening PR"
+    rm -f "$RUNTIME_DIR/dirty" 2>/dev/null
+    emit_info "[24hour-ClaudeCode] Skipped: only trivial file(s) changed ($trivial_list). The runtime will engage on the next substantive edit; commit this manually if you want it on the record."
+    # emit_info calls exit 0 internally; the line below is defense-in-depth.
     exit 0
   fi
 
