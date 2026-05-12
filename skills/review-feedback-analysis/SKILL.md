@@ -1,11 +1,11 @@
 ---
 name: review-feedback-analysis
-description: Triage PR review comments by severity (Reject/Major/Minor/Nit) and produce an adopt-or-justify decision per item. Use after the babysit skill sees `reviewers=` change or new review comments in <runtime>/feedback.json. Cites quality-gate.md for tier timing and severity matrix.
+description: Triage Claude Code Action verdict blocking findings or manual PR review comments by severity, then produce an adopt-or-justify decision per item. Use after the Stop hook returns review feedback or babysit-pr diagnostics show new review comments.
 ---
 
 # Review Feedback Analysis
 
-You're here because a reviewer (`claude[bot]` or a third-party agent / human) posted feedback. Your job: classify each item, decide adopt-or-skip, prepare the input for `rework-implementation`.
+You're here because the Stop hook returned a current-SHA review verdict with blocking findings, or a reviewer (`claude[bot]`, a third-party agent, or a human) posted feedback during manual diagnostics. Your job: classify each item, decide adopt-or-skip, prepare the input for `rework-implementation`.
 
 <EXTREMELY-IMPORTANT>
 **Adopt by default, even Minor and Nit.** The bar to skip is "demonstrably wrong" or "conflicts with project CLAUDE.md hard rule". A reply that says "I disagree" is not enough — give a reason, cite the rule.

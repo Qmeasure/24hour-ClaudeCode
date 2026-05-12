@@ -7,10 +7,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 This is **`24hour-ClaudeCode`**, a Claude Code **plugin** (not a standalone skill, not an application). The repo is structured per the [official plugin format](https://code.claude.com/docs/en/plugins-reference.md):
 
 - `.claude-plugin/{plugin,marketplace}.json` — plugin manifest + self-hosted marketplace
-- `hooks/` — three hooks: `SessionStart` (bootstrap.sh) + `PostToolUse` (post-tool-use.sh, light marker) + `Stop` (stop.sh, the heavy orchestrator)
+- `hooks/` — four hooks: `SessionStart` (bootstrap.sh), `UserPromptSubmit` for `/goal` (goal-submit.sh), `PostToolUse` (post-tool-use.sh, light marker), and `Stop` (stop.sh, the heavy orchestrator)
 - `skills/` — 1 bootstrap meta-skill (`using-24hour-ClaudeCode`, auto-injected by SessionStart) + 7 phase skills invoked on demand by the `Skill` tool
 - `commands/` — 6 debug slash commands (status / retry / setup / enable / disable / clear-lock)
-- `scripts/` — 16 deterministic bash helpers (gh / git / runtime state) called by hooks and commands
+- `scripts/` — deterministic bash helpers (gh / git / runtime state / current-SHA review loop) called by hooks and commands
 - `templates/` — workflow YAMLs (rendered into user projects via `render-workflows.sh`) + config schema + Superset lifecycle scripts (setup/run/teardown)
 - `references/` — topic deep-dives (English) cross-linked from skills
 - `.github/workflows/` — **THIS repo's self-review** workflows (NOT the templates that ship to users). They review PRs to the plugin source itself, with plugin-architecture-aware dimensions. See "Two distinct workflow tiers" below.
@@ -21,7 +21,7 @@ There is no compile step, no test runner, no package manager. Everything is bash
 
 ## Project name vs. on-disk path
 
-The on-disk repo path is currently `worktree-pr-flow/` for git history continuity, but the **plugin slug is `24hour-ClaudeCode`** (declared in `.claude-plugin/plugin.json`). Slash commands, runtime paths, config filenames, and skill cross-references all use `24hour-ClaudeCode`. Do not "fix" this inconsistency — they are intentionally separate.
+The **plugin slug is `24hour-ClaudeCode`** (declared in `.claude-plugin/plugin.json`). Slash commands, runtime paths, config filenames, and skill cross-references all use `24hour-ClaudeCode`.
 
 ## Two distinct workflow tiers
 
@@ -42,15 +42,13 @@ Several defensive helpers exist after the security/correctness audit. **Do not r
 
 - **`scripts/is-protected-branch.sh`** — single source of truth for "is this branch protected?". Queries real GitHub branch protection (`gh api repos/X/branches/$branch`) with a hardcoded fallback (main/master/develop/dev/staging/production/release/prod + `release/*`/`hotfix/*` globs) when offline. Caches per-branch results in `state.json.protected_branch_cache`. Used by `bootstrap.sh`, `auto-commit.sh`, `check-stop-conditions.sh`. Never bypass it with a fresh inline `case` statement.
 
-- **Stale-lock detection in `runtime-lock.sh`** — before `mkdir $LOCK_DIR`, the script checks if a held lock has a dead PID AND is >30 min old. If both, it clears the orphan and acquires fresh. Without this, a SIGKILL of `stop.sh` deadlocks the runtime forever. The 30-min threshold is conservative because Stop hook timeout is 900s (15 min); only locks older than 2× the max legitimate hold are eligible for stale-clear.
+- **Stale-lock detection in `runtime-lock.sh`** — before `mkdir $LOCK_DIR`, the script checks if a held lock has a dead PID AND is >30 min old. If both, it clears the orphan and acquires fresh. Without this, a SIGKILL of `stop.sh` deadlocks the runtime forever.
 
-- **`<runtime>/.gitignore`** — bootstrap.sh and `runtime-state.sh init` write a `.gitignore` containing `*` inside `<runtime>/`. This ensures runtime state files (state.json, lock, dirty, current-pr.json, feedback.json, last-run.json) NEVER show up in `git diff` or `git status`. If you ever notice runtime files leaking into a PR diff, the first thing to check is whether this gitignore got removed.
+- **`<runtime>/.gitignore`** — bootstrap.sh and `runtime-state.sh init` write a `.gitignore` containing `*` inside `<runtime>/`. This ensures runtime state files (state.json, lock, dirty, current-pr.json, status-*.json, verdict-*.json, goal-guard.json, last-run.json) NEVER show up in `git diff` or `git status`. If you ever notice runtime files leaking into a PR diff, the first thing to check is whether this gitignore got removed.
 
-- **`_warnings` array in `feedback.json`** — `poll-github.sh` captures stderr from each `gh` call; on failure it adds a warning entry instead of silently defaulting to `[]`. `decide-feedback.sh` short-circuits to `inconclusive` if any warnings present (don't auto-merge on stale data).
+- **Current-SHA status/verdict files** — `wait-for-current-sha-status.sh` writes `status-<sha>.json`; `fetch-review-verdict.sh` writes `verdict-<sha>.json`; `decide-current-sha-feedback.sh` refuses stale/missing/inconclusive review data. Do not merge from PR-level aggregate checks or old comments.
 
-- **Case-insensitive check conclusions in `decide-feedback.sh`** — uses `ascii_downcase` + `IN()` instead of literal string match. GitHub's check conclusion case varies by API path; defensive matching avoids false positives.
-
-- **Actionable-comment regex** — uses imperative-verb pattern (`must fix|need to fix|should fix|please fix|please address|please change|please update`) plus case-sensitive uppercase markers (`TODO:|FIXME:|FIX:|BUG:|XXX:|HACK:`). The previous version (`bug|broken|wrong|...`) false-positived on past-tense praise. Don't widen this pattern without testing the false-positive cases (see test suite in stop.sh smoke tests).
+- **Machine-readable review verdicts** — the Claude Code Review workflow must produce a verdict bound to `github.event.pull_request.head.sha`. Artifact output is primary; hidden PR-comment JSON is fallback only. Ordinary natural-language PR comments are diagnostics, not the merge gate.
 
 - **Provider question BEFORE Claude OAuth** — `configure-actions.sh` asks `claude / codex / both` at Step 2.5, then conditionally runs `claude setup-token` only if `PROVIDER ∈ {claude, both}`. Codex-only users skip the OAuth dance entirely.
 
@@ -62,7 +60,7 @@ Several defensive helpers exist after the security/correctness audit. **Do not r
 
 ## Big-picture architecture (Revision 2 — Stop hook owns the loop)
 
-Three hooks, with strict separation of duties:
+Four hooks, with strict separation of duties:
 
 ```
 SessionStart hook  →  bootstrap.sh detects env  →  injects exactly one of:
@@ -72,26 +70,30 @@ SessionStart hook  →  bootstrap.sh detects env  →  injects exactly one of:
 
 PostToolUse hook   →  post-tool-use.sh: touch <runtime>/dirty (5-line marker; cheap)
 
+UserPromptSubmit (/goal)
+                   →  goal-submit.sh: arm <runtime>/goal-guard.json and
+                       inject exact ready-to-ship marker instructions
+
 Stop hook (turn end) → stop.sh: MODE-AWARE ORCHESTRATOR
                        Branches on state.json.mode + git diff:
 
                        (idle | ready_for_rework) + diff non-empty:
+                         goal guard check (hold if /goal active and marker absent) →
                          danger-paths check → check-stop-conditions →
                          config.checks.commands → auto-commit → push → ensure-pr →
-                         iteration handling → mode = waiting_for_checks →
-                         emit additionalContext "PR #N draft. CI starting." → exit 0
+                         iteration handling → mode = waiting_for_review →
+                         wait current HEAD SHA CI + Claude Code Review verdict
 
-                       waiting_for_checks:
-                         wait-for-checks.sh (with timeout) →
-                         poll-github.sh (full snapshot to feedback.json) →
-                         decide-feedback.sh → token + reason:
-                           • feedback_good   → gh pr merge --auto, mode=merged, exit 0
+                       waiting_for_review:
+                         wait-for-current-sha-status.sh →
+                         fetch-review-verdict.sh →
+                         decide-current-sha-feedback.sh → token + reason:
+                           • pass            → gh pr merge --auto --squash, mode=merged, exit 0
                            • rework_required → mode=ready_for_rework, return
                                               {"decision":"block","reason":"..."}
                                               ← official mechanism: Claude cannot stop;
                                                  reason is the agent's next-turn context
-                           • inconclusive    → wait, retry next stop
-                           • stop:*          → invoke failure-escalation, exit 0
+                           • stop            → systemMessage, mode=stopped, exit 0
 
                        merged:
                          cleanup current-pr.json + feedback.json + dirty;
@@ -108,8 +110,12 @@ Stop hook (turn end) → stop.sh: MODE-AWARE ORCHESTRATOR
 detect-changes.sh   → emits JSON with files + buckets (code/lock/docs/secrets/workflow/danger)
 check-stop-conditions.sh → reads state + config, returns continue|stop:<token>
 auto-commit.sh      → stages non-danger files, commits with `auto: WIP` placeholder, returns SHA
-ensure-pr.sh        → gh pr view || gh pr create --draft --fill; writes <runtime>/current-pr.json
-poll-github.sh      → snapshots state/checks/reviews/comments to <runtime>/feedback.json
+ensure-pr.sh        → gh pr view || gh pr create --fill; writes <runtime>/current-pr.json
+review-loop/wait-for-current-sha-status.sh → waits current HEAD SHA CI + Claude Code Review workflow
+review-loop/fetch-review-verdict.sh        → reads current HEAD SHA verdict artifact, hidden JSON fallback
+review-loop/decide-current-sha-feedback.sh → returns pass | rework_required | stop
+review-loop/render-rework-reason.sh        → renders decision:block.reason for Claude
+poll-github.sh      → diagnostic snapshot only; not the main merge gate
 runtime-state.sh    → init/get/set/incr atomic state operations (jq + temp+mv)
 runtime-lock.sh     → mkdir-based atomic lock with queue flag
 configure-actions.sh, render-workflows.sh, detect-project.sh, check-actions.sh, install-superset-config.sh, superset-launch.sh
@@ -121,20 +127,24 @@ configure-actions.sh, render-workflows.sh, detect-project.sh, check-actions.sh, 
 Both hooks emit JSON to stdout per the Claude Code spec:
 
 ```json
-{"hookSpecificOutput": {"hookEventName": "<event>", "additionalContext": "<text>"}}
+{"systemMessage": "<text>"}  # Stop only
+{"hookSpecificOutput": {"hookEventName": "<event>", "additionalContext": "<text>"}}  # context-capable non-Stop events
 ```
 
 The `additionalContext` is appended to the agent's context. Per superpowers' pattern, we wrap critical content in `<EXTREMELY-IMPORTANT>` to ensure attention.
 
 ## Auto-generated files
 
-`hooks/on-edit.sh` writes to several runtime files atomically. **Never edit these directly:**
+The hooks and review-loop scripts write several runtime files atomically. **Never edit these directly:**
 
 - `<project>/.claude/runtime/24hour-ClaudeCode/state.json` — managed by `runtime-state.sh`
 - `<project>/.claude/runtime/24hour-ClaudeCode/lock` — managed by `runtime-lock.sh`
-- `<project>/.claude/runtime/24hour-ClaudeCode/last-run.json` — managed by `record_event` in on-edit.sh
+- `<project>/.claude/runtime/24hour-ClaudeCode/last-run.json` — managed by `record_event` in `stop.sh`
 - `<project>/.claude/runtime/24hour-ClaudeCode/current-pr.json` — managed by `ensure-pr.sh`
-- `<project>/.claude/runtime/24hour-ClaudeCode/feedback.json` — managed by `poll-github.sh`
+- `<project>/.claude/runtime/24hour-ClaudeCode/status-<sha>.json` — managed by `wait-for-current-sha-status.sh`
+- `<project>/.claude/runtime/24hour-ClaudeCode/verdict-<sha>.json` — managed by `fetch-review-verdict.sh`
+- `<project>/.claude/runtime/24hour-ClaudeCode/goal-guard.json` — managed by `goal-submit.sh` and `stop.sh`
+- `<project>/.claude/runtime/24hour-ClaudeCode/feedback.json` — optional diagnostics from `poll-github.sh`
 
 ## Commands (for editing this repo)
 
@@ -152,20 +162,24 @@ jq -e . templates/24hour-ClaudeCode.config.json
 TMP=$(mktemp -d) && cd "$TMP" && git init -q && \
   git -c user.email=x@x -c user.name=x commit --allow-empty -q -m init
 TMP_WT=$(mktemp -d) && rmdir "$TMP_WT" && git worktree add "$TMP_WT" -b feat/test -q
-CLAUDE_PLUGIN_ROOT=/Users/lesterbot/Downloads/worktree-pr-flow CLAUDE_PROJECT_DIR="$TMP_WT" \
+CLAUDE_PLUGIN_ROOT=/Users/lesterbot/Downloads/24hour-ClaudeCode CLAUDE_PROJECT_DIR="$TMP_WT" \
   bash hooks/bootstrap.sh < /dev/null | jq
 
-# Smoke-test the on-edit hook with a fake gh
-# (see hooks/on-edit.sh top for the test recipe)
+# Smoke-test the /goal prompt guard
+printf '{"hook_event_name":"UserPromptSubmit","user_prompt":"/goal implement x"}' | \
+  CLAUDE_PLUGIN_ROOT=/Users/lesterbot/Downloads/24hour-ClaudeCode CLAUDE_PROJECT_DIR="$TMP_WT" \
+  bash hooks/goal-submit.sh | jq
 
 # Verify a full plugin install on a synthetic project
 TEST_PROJECT=$(mktemp -d) && cd "$TEST_PROJECT" && git init -q && touch a.txt && \
   git -c user.email=x@x -c user.name=x commit -q -am init
 mkdir -p .claude/plugins
-ln -s /Users/lesterbot/Downloads/worktree-pr-flow .claude/plugins/24hour-ClaudeCode
+ln -s /Users/lesterbot/Downloads/24hour-ClaudeCode .claude/plugins/24hour-ClaudeCode
 # Now simulate Claude Code:
 # - bootstrap.sh fires on session start
-# - on-edit.sh fires after Edit/Write/MultiEdit
+# - goal-submit.sh arms the Goal guard for /goal prompts
+# - post-tool-use.sh marks dirty after Edit/Write/MultiEdit
+# - stop.sh gates commit/push/PR/review/merge
 ```
 
 There are no `npm` / `pip` / `cargo` / `make` commands.
@@ -188,16 +202,8 @@ There are no `npm` / `pip` / `cargo` / `make` commands.
 
 - **Never re-introduce a `~/.claude/plugins/` install path.** The plugin is project-level only because hooks must be project-scoped and workflow YAMLs are repo-tailored.
 - **Never add a `prompt:` field to a slash command** that bypasses the corresponding skill. Slash commands are debug helpers; primary flow is hook-driven.
-- **Never auto-merge from a hook.** `gh pr merge --auto` is invoked by the agent, mediated by the `using-24hour-ClaudeCode` skill, after the agent has reviewed the diff and written a proper commit message. The hook is deterministic but doesn't make merge-enable decisions.
-- **Never block on hook failure.** All hooks exit 0. A hook failure should print to additionalContext and let the agent decide; non-zero exits surface as tool-call errors.
-- **Never put apostrophes inside `<<EOF` heredoc bodies that are inside `$(...)` command substitution.** See the `printf '%s\n'` pattern in `on-edit.sh`.
+- **Never auto-merge without the full current-SHA gate.** `gh pr merge --auto --squash` is allowed only after current HEAD SHA CI success, Claude Code Action verdict=`pass`, SHA match, no blocking findings, and confidence not low.
+- **Never block on hook failure.** All hooks exit 0. Stop uses `systemMessage` for safe stops and `decision:block` only for actionable code feedback; non-Stop context hooks use `hookSpecificOutput.additionalContext`.
+- **Never put apostrophes inside `<<EOF` heredoc bodies that are inside `$(...)` command substitution.** Prefer `printf '%s\n' "..." "..."` line-by-line construction.
 - **Never modify `.github/workflows/` from inside a Claude Code Action run.** GitHub blocks it for security; the rendered workflow blocks it via `--disallowed-tools`.
 - **Never rename the `Auto-generated by` headers** in rendered workflow YAMLs. The renderer's manual-edit detection greps that string.
-
-## Plugin name vs. legacy `worktree-pr-flow` references
-
-Some scripts still print "worktree-pr-flow" in error messages or fall back to the old slug. As we update them, replace with `24hour-ClaudeCode`. The migration plan tracks this — see `/Users/lesterbot/.claude/plans/plugin-peaceful-raccoon.md`.
-
-## Phase tracking
-
-Implementation is staged. The migration plan defines 9 phases (0 through 8). Current state: see TaskList. When making changes, identify which phase you're in to avoid landing partial implementations of a future phase.

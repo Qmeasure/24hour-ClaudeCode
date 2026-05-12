@@ -1,11 +1,11 @@
 ---
 name: verification-before-push
-description: Pre-push gate — diff review, no-secrets, no-destructive-ops, no-runaway-diff, project local checks. The on-edit hook runs an automated subset of this; this skill is the human-readable mental model and is also invoked before any manual push (e.g., a force-push from rework-implementation).
+description: Pre-push gate — diff review, no-secrets, no-destructive-ops, no-runaway-diff, project local checks. The Stop hook runs an automated subset before its own push; this skill is the human-readable mental model for manual pushes outside the normal loop.
 ---
 
 # Verification Before Push
 
-Before any push (auto or manual), every one of these has to be true. The on-edit hook automates most checks; you invoke this skill manually before `git push --force-with-lease` (commit amends) or before any push that bypasses the hook.
+Before any push (auto or manual), every one of these has to be true. The Stop hook automates the configured local checks before its own push; you invoke this skill manually before any push that bypasses the hook.
 
 ## Iron Law
 
@@ -70,7 +70,7 @@ pnpm test
 
 Fail-fast: if typecheck fails, don't bother running lint/test. Fix and re-verify.
 
-The on-edit hook ran these automatically before its auto-commit. You're invoking this skill because you're doing a **manual** push (e.g., after a `--amend`). You must run them yourself.
+The Stop hook runs these configured checks automatically before its auto-commit/push. You're invoking this skill because you're doing a **manual** push. You must run them yourself.
 
 ### 6. Commit message is informative
 
@@ -90,8 +90,8 @@ Conventional Commits format is required (see `rework-implementation` skill for t
 
 | Scenario | Who runs verification |
 |---|---|
-| Auto-edit by the agent → on-edit hook fires | Hook runs subset (#5 only, per `config.checks.commands`) |
-| Agent amends commit message after hook (`git commit --amend`) | **You** invoke this skill before `git push --force-with-lease` |
+| Agent edits → Stop hook fires | Hook runs subset (#5 only, per `config.checks.commands`) |
+| Manual commit/push outside the loop | **You** invoke this skill before `git push` |
 | User invokes `/24hour-ClaudeCode:retry` | Hook runs subset; you should still mentally run #1–#4 |
 | Pushing a hand-written commit (no hook) | **You** run all 6 |
 

@@ -1,5 +1,5 @@
 ---
-description: Set 24hour-ClaudeCode.config.json `enabled: false`. Stops the SessionStart bootstrap and PostToolUse hook from engaging until re-enabled.
+description: Set 24hour-ClaudeCode.config.json `enabled: false`. Stops SessionStart bootstrap content and the Stop hook loop from engaging until re-enabled.
 ---
 
 Disable the 24hour-ClaudeCode runtime for this project. Workflow YAMLs remain in place; the loop simply stops auto-engaging.
@@ -15,7 +15,7 @@ fi
 
 tmp=$(mktemp)
 jq '.enabled = false' "$CONFIG" > "$tmp" && mv "$tmp" "$CONFIG"
-echo "✓ Disabled. The on-edit hook and SessionStart bootstrap will stay silent until re-enabled."
+echo "✓ Disabled. SessionStart bootstrap content and Stop hook automation will stay silent until re-enabled."
 echo "  To re-enable: /24hour-ClaudeCode:enable"
 ```
 

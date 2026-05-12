@@ -24,8 +24,11 @@ RUNTIME="$PROJECT_DIR/.claude/runtime/24hour-ClaudeCode"
 # Current loop state
 jq . "$RUNTIME/state.json"
 
-# Last poll snapshot
+# Diagnostic PR snapshot, if generated
 jq . "$RUNTIME/feedback.json"
+
+# Current-SHA gate outputs, if available
+ls -t "$RUNTIME"/status-*.json "$RUNTIME"/verdict-*.json 2>/dev/null | head
 
 # Last hook run
 jq . "$RUNTIME/last-run.json"
@@ -38,7 +41,8 @@ For a fresh poll without going through the Stop hook:
 
 ```bash
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/poll-github.sh"
-bash "${CLAUDE_PLUGIN_ROOT}/scripts/decide-feedback.sh"
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/review-loop/wait-for-current-sha-status.sh" --pr "$PR" --sha "$(git rev-parse HEAD)" --timeout 600
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/review-loop/fetch-review-verdict.sh" --pr "$PR" --sha "$(git rev-parse HEAD)" --run-id "<review-run-id>"
 ```
 
 ## Tier timing (when polls aren't auto-driven)
@@ -60,7 +64,7 @@ Default to A unless you see other agents.
 
 ## Manual decision-table reference
 
-Same matrix as `<runtime>/feedback.json` analysis (see `references/decision-table.md` for the full table). Quick map:
+The automatic merge gate is current-SHA status + current-SHA verdict. The table below is a manual diagnostic quick map:
 
 | Saw | Action |
 |---|---|
@@ -79,21 +83,21 @@ In normal operation (plugin enabled), **don't arm a Monitor**. The Stop hook is 
 
 ## When to dispatch
 
-If `<runtime>/feedback.json` shows feedback you need to act on:
+If current-SHA status/verdict or `<runtime>/feedback.json` diagnostics show feedback you need to act on:
 
 | Feedback shape | Skill to invoke |
 |---|---|
 | Failed CI checks | `ci-feedback-analysis` |
-| `CHANGES_REQUESTED` reviews or actionable comments | `review-feedback-analysis` |
+| Current-SHA Claude verdict `fail` with blocking findings | `review-feedback-analysis` |
 | Both | `ci-feedback-analysis` first (CI usually has cited file:line), then `review-feedback-analysis` |
 | All clear | Nothing — the Stop hook will auto-merge on the next pass |
 
 ## Anti-patterns
 
 - ❌ Polling `gh pr view` in a tight loop while the Stop hook is also polling — competing pollers
-- ❌ Manually invoking `gh pr merge --auto` — the Stop hook handles this on `feedback_good`
-- ❌ Running `wait-for-checks.sh` with a long timeout outside the Stop hook — blocks your turn
-- ❌ Copying review comments into chat instead of reading them from `<runtime>/feedback.json` (already cleaned + structured)
+- ❌ Manually invoking `gh pr merge --auto` — the Stop hook handles this on current-SHA `pass`
+- ❌ Running long current-SHA waits outside the Stop hook — blocks your turn
+- ❌ Copying review comments into chat instead of reading current-SHA `verdict-*.json` or diagnostic `<runtime>/feedback.json`
 
 ## Index
 

@@ -25,8 +25,11 @@ echo "── last-run.json ─────────────────�
 [ -f "$RUNTIME/last-run.json" ] && jq . "$RUNTIME/last-run.json" || echo "(no runs yet)"
 
 echo ""
-echo "── feedback.json (last poll) ───────────"
-[ -f "$RUNTIME/feedback.json" ] && jq '{polled_at, pr: .pr, checks: (.checks // [] | length), reviews: (.reviews // [] | length)}' "$RUNTIME/feedback.json" || echo "(no polls yet)"
+echo "── latest current-SHA status/verdict ───"
+latest_status=$(ls -t "$RUNTIME"/status-*.json 2>/dev/null | head -1)
+latest_verdict=$(ls -t "$RUNTIME"/verdict-*.json 2>/dev/null | head -1)
+[ -n "$latest_status" ] && jq '{head_sha, ci: .ci.status, review: .review_action.status, failed_checks: (.failed_checks // [] | length)}' "$latest_status" || echo "(no current-SHA status yet)"
+[ -n "$latest_verdict" ] && jq '{head_sha, verdict, status, confidence, blocking_findings: (.blocking_findings // [] | length)}' "$latest_verdict" || echo "(no verdict yet)"
 
 echo ""
 echo "── lock state ──────────────────────────"

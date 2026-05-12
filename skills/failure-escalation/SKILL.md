@@ -89,7 +89,7 @@ The 24hour-ClaudeCode runtime never pushes to main / master / develop / staging 
 
 Options:
   1. Switch to a feature branch: git switch -c feat/<name>
-  2. The auto-loop will engage on the new branch. Re-edit your file to trigger the on-edit hook.
+  2. The auto-loop will engage on the new branch. End the turn or run `/24hour-ClaudeCode:retry` after making a real diff.
 ```
 
 ### `stop:gh_auth_lost`
@@ -102,7 +102,7 @@ Options:
 
 Options:
   1. Re-authenticate: gh auth login
-  2. After auth, re-edit a file in the worktree to re-trigger the on-edit hook.
+  2. After auth, end the turn or run `/24hour-ClaudeCode:retry` to re-run the Stop hook.
 ```
 
 ### `stop:push_rejected`
@@ -117,7 +117,7 @@ Likely a non-fast-forward (someone else pushed to this branch) or branch protect
 
 Options:
   1. Pull and rebase: git fetch origin <branch> && git rebase origin/<branch>
-     Then re-push (the next on-edit will retry, OR run /24hour-ClaudeCode:retry).
+     Then end the turn so the Stop hook retries, or run `/24hour-ClaudeCode:retry`.
   2. If branch protection is the issue: ask the user to grant push access, or PR to a different branch.
 ```
 

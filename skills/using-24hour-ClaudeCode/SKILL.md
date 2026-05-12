@@ -8,25 +8,26 @@ description: Bootstrap meta-skill auto-injected by the SessionStart hook of the 
 <EXTREMELY-IMPORTANT>
 You are operating inside the **24hour-ClaudeCode** auto-PR-loop runtime. This document is the contract.
 
-**The Iron Law:** Done means PR `state=MERGED`. Not "auto-merge enabled". Not "CI green". Not "review approved". Until the PR is merged or escalated, the loop continues.
+**The Iron Law:** Done means the current head SHA passed CI + review and the PR is either `state=MERGED` or GitHub auto-merge is armed with no remaining code feedback. Not merely "CI green" or "review approved".
 
 The user authorized this loop the moment they entered this worktree. Do **not** ask permission to commit, push, open PRs, mark ready, or enable auto-merge. Those actions are done by the hook deterministically. Your job is to **edit code in response to feedback** that the hook feeds back to you.
 </EXTREMELY-IMPORTANT>
 
 ## How the loop runs (Revision 2 — Stop hook owns it)
 
-The plugin uses three hooks:
+The plugin uses four hooks:
 
 | Hook | When | What it does |
 |---|---|---|
 | **SessionStart** | Every session start, `/clear`, auto-compact | `bootstrap.sh` detects environment and injects this skill (you're reading the result). |
+| **UserPromptSubmit** | When you type `/goal ...` | `goal-submit.sh` arms the Goal guard and injects the ready-to-ship marker contract. |
 | **PostToolUse** (matcher: `Edit \| Write \| MultiEdit`) | After every code-modifying tool | `post-tool-use.sh` touches `<runtime>/dirty`. That's all. |
 | **Stop** | When you finish a turn | `stop.sh` — the heavy worker. Mode-aware. See below. |
 
 **Stop is the workhorse.** It's mode-aware via `<runtime>/state.json.mode`:
 
 ```
-state.mode = idle / waiting_for_preflight_merge / waiting_for_checks / ready_for_rework / merged
+state.mode = idle / waiting_for_preflight_merge / waiting_for_review / ready_for_rework / merged / stopped
 ```
 
 ```
@@ -38,36 +39,50 @@ state.mode = idle / waiting_for_preflight_merge / waiting_for_checks / ready_for
               ┌─────────────────────┼─────────────────────┐
               ▼                     ▼                     ▼
        mode=idle (or         mode=waiting_for_      mode=merged
-       ready_for_rework)     checks                 ─────────────
+       ready_for_rework)     review                 ─────────────
        ─────────────         ─────────────          Cleanup state.
-       diff non-empty?       Poll PR. Decide:       Reset to idle.
-         yes →               • feedback_good →
-           local checks        gh pr merge --auto
+       diff non-empty?       Wait current SHA       Reset to idle.
+         yes →               • pass →
+           local checks        gh pr merge --auto --squash
            commit              mode = merged
            push                Inform you ✅
            ensure PR
-           mode = waiting    • rework_required →
-                               mode = ready_for_rework
+           mode = waiting_   • rework_required →
+             for_review        mode = ready_for_rework
                                Output JSON:
                                {"decision":"block",
                                 "reason":"<feedback>"}
                                ⚠️ This makes you
                                 continue, not stop.
 
-                             • inconclusive →
-                               Inform you, retry
-                               on next stop.
+                             • stop →
+                               Missing/stale/
+                               inconclusive/infra
+                               failure; inform you
+                               and stop safely.
 ```
 
 ## When you receive `<24hour-ClaudeCode>` blocks
 
-The Stop hook emits informational `additionalContext` blocks wrapped in `<24hour-ClaudeCode>...</24hour-ClaudeCode>`. Common ones:
+The Stop hook emits informational `systemMessage` blocks wrapped in `<24hour-ClaudeCode>...</24hour-ClaudeCode>`. Common ones:
 
-- **"PR #N (draft) at <url>. CI starting."** → A new commit was just pushed. The next stop will poll. You can stop here, or make more edits if you have related fixes ready.
-- **"PR #N is still running."** → CI hasn't finished. Stop here; it'll be checked next time.
+- **"Auto-merge enabled for PR #N..."** → CI and Claude Code Action verdict passed for the current head SHA; GitHub will merge once branch protection is satisfied. No code rework remains in this session.
 - **"✅ PR #N merged."** → Done. Cleanup happens on the next stop. End the loop with a brief success message to the user.
+- **"Goal mode guard is active..."** → A `/goal` is still protected from shipping. Continue the Goal session; do not manually commit/push/PR.
 - **"📦 Workflow file changes were auto-split into preflight PR #N."** → You edited a `.github/workflows/*.yml` file. The runtime opened a separate "preflight" PR with just the workflow changes (auto-merge enabled) and held the rest of your diff back. Wait for it to merge — see "When the runtime auto-splits workflow changes" below.
 - **"⛔ STOP condition: ..."** → A hard stop fired. Invoke `failure-escalation` to format an escalation message; do NOT auto-retry.
+
+## Goal mode guard
+
+When the user starts work with `/goal ...`, the plugin arms a guard in `<runtime>/goal-guard.json`. While that guard exists, the Stop hook will not commit, push, open a PR, or merge just because the worktree has a diff. The Stop hook reads native Claude Code `goal_status` transcript attachments as a fallback, but same-turn shipping depends on the marker because the native `/goal` evaluator runs after project Stop hooks on current Claude Code builds.
+
+Only include this exact line as the final non-empty line when the `/goal` condition is truly satisfied and you are ready for 24hour-ClaudeCode to submit the PR:
+
+```text
+<24hour-ClaudeCode-goal-complete ready-to-ship="true" />
+```
+
+Do not include the marker in progress updates, partial summaries, or while tests/build/review criteria still need work. Once the marker appears in your latest message, the Stop hook clears the guard and proceeds with the normal current-SHA PR loop.
 
 ## When the hook returns `{"decision":"block","reason":"..."}`
 
@@ -76,7 +91,7 @@ This is the rework-feedback mechanism. The Stop hook returns this JSON when:
 - A local check failed before commit (lint/typecheck/test)
 - A push was rejected
 - An ensure-pr failure
-- After polling: CI failed, or `CHANGES_REQUESTED`, or actionable comments present
+- After waiting for the current head SHA: CI failed with logs, or Claude Code Action verdict=`fail` with blocking findings
 - Edit touched a `danger_paths` entry
 
 When you see `decision:block`, **you cannot stop**. Claude continues immediately. The `reason` is your context. Your job:
@@ -87,7 +102,7 @@ When you see `decision:block`, **you cannot stop**. Claude continues immediately
    - `review-feedback-analysis` — for `CHANGES_REQUESTED` or actionable comments
    - `rework-implementation` — to apply the fix per its discipline (minimal change, scope lock)
 3. **Edit the cited file(s) and the cited file(s) only.** The PostToolUse hook marks `dirty`; the next Stop will commit + push and the cycle continues.
-4. **Do not stop until the diff is fixed** OR a stop condition fires. The Stop hook will emit `feedback_good` (and merge) when feedback resolves.
+4. **Do not stop until the diff is fixed** OR a stop condition fires. The Stop hook will merge or enable auto-merge when current-SHA CI and Claude Code Action verdict pass.
 
 ## Phase skills you dispatch to
 
@@ -95,39 +110,15 @@ When you see `decision:block`, **you cannot stop**. Claude continues immediately
 |---|---|
 | `github-actions-onboarding` | Bootstrap detected onboarding incomplete; finish setup before any code edit |
 | `verification-before-push` | Before any **manual** push you initiate (e.g., a `--force-with-lease` after `git commit --amend`). The Stop hook's auto-push runs an automated subset; this skill is your mental model for manual cases. |
-| `rework-implementation` | After receiving `decision:block` with a rework reason, OR when amending the placeholder commit message. **Required reading for the loop.** |
+| `rework-implementation` | After receiving `decision:block` with a rework reason. **Required reading for the loop.** |
 | `ci-feedback-analysis` | When `decision:block` reason cites CI failure(s) |
 | `review-feedback-analysis` | When `decision:block` reason cites reviewer comments / `CHANGES_REQUESTED` |
 | `babysit-pr` | When you want to manually inspect PR state mid-loop (rare; the Stop hook owns the babysit) |
 | `failure-escalation` | When the Stop hook says `⛔ STOP condition`, or `max_iterations` hit |
 
-## Required actions after auto-commit (mandatory)
+## Manual PR polish
 
-When the Stop hook reports a fresh commit ("Iteration #N. PR #M (draft) at..."), you should — on this turn or the next — improve the artifacts the hook wrote with placeholder values:
-
-1. **Amend the commit message** to a Conventional Commit (`feat(scope):`, `fix(scope):`, etc.):
-   ```bash
-   git commit --amend -m "feat(auth): refresh OAuth before expiry"
-   git push --force-with-lease
-   ```
-   Use `--force-with-lease` (never plain `--force`).
-
-2. **Update PR body** with What / How tested / Closes #N:
-   ```bash
-   gh pr edit "$PR" --body "## What
-   ...
-   ## How tested
-   - [x] typecheck/lint/test
-   ## Linked issue
-   Closes #<N>"
-   ```
-
-3. **Mark PR ready** (only after verify passes locally):
-   ```bash
-   gh pr ready "$PR"
-   ```
-
-These are NOT mandatory in iteration 1's first stop — the hook moves to `waiting_for_checks` immediately. But they should happen before the PR merges. You can do them on the same turn or any subsequent turn before `feedback_good` triggers auto-merge.
+The automatic path moves directly into `waiting_for_review` and may merge without another user turn. Only edit PR metadata manually when the hook has stopped safely or the user explicitly asks for manual polish. Do not amend or force-push during an active automatic review loop.
 
 ## When the runtime auto-splits workflow changes
 
@@ -184,7 +175,7 @@ When a stop fires, invoke `failure-escalation` to format the user-facing message
 - **Never** call `gh pr merge` yourself — the Stop hook handles auto-merge when feedback is good.
 - **Never** delete the runtime lockfile manually. Use `/24hour-ClaudeCode:clear-lock` if it's stuck (after diagnosing why).
 - **Never** disable the runtime to "make the loop simpler". If a specific repo shouldn't auto-loop, run `/24hour-ClaudeCode:disable` once; the user explicitly opts out.
-- **Never** poll `gh pr view` ad-hoc as the loop's primary state source. The Stop hook + `<runtime>/feedback.json` are authoritative.
+- **Never** poll `gh pr view` ad-hoc as the loop's primary state source. The Stop hook's current-SHA `status-*.json` + `verdict-*.json` files are authoritative; `<runtime>/feedback.json` is diagnostic only.
 
 ## Slash commands (debug only)
 

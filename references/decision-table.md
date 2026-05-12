@@ -1,6 +1,6 @@
 # Babysit decision table
 
-This is the central reference for Step 11. Every Monitor emit triggers a lookup here.
+This is a manual diagnostic reference for legacy babysit flows. In normal 24hour-ClaudeCode operation, `stop.sh` and the current-SHA `status-*.json` / `verdict-*.json` files are authoritative.
 
 ## Event format
 

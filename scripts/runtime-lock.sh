@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # runtime-lock.sh — Cooperative lock for <project>/.claude/runtime/24hour-ClaudeCode/lock.
 #
-# Used by on-edit.sh to prevent concurrent invocations (e.g., when Claude does
-# multiple Edits in quick succession). The "queued" pattern lets the holder
-# know more work landed during its run, so it can re-debounce after release.
+# Used by Stop hook orchestration to prevent concurrent invocations. The
+# "queued" pattern lets the holder know more work landed during its run.
 #
 # Subcommands:
 #   acquire             Try to acquire the lock atomically.
@@ -34,10 +33,8 @@ cmd="${1:-is-held}"
 case "$cmd" in
   acquire)
     # Stale-lock detection: clear the lock if the holder PID is dead AND
-    # the lock is older than 30 minutes. The Stop hook timeout is 900s (15 min),
-    # so anything past 1800s means the previous run was killed (SIGKILL, OOM,
-    # session terminated) and the trap couldn't release. Without this,
-    # one orphaned lock breaks the runtime forever.
+    # the lock is older than 30 minutes. Without this, one orphaned lock breaks
+    # the runtime forever.
     if [[ -d "$LOCK_DIR" && -f "$LOCK_DIR/holder" ]]; then
       pid=$(grep -oE 'pid=[0-9]+' "$LOCK_DIR/holder" 2>/dev/null | cut -d= -f2)
       acquired_at=$(grep -oE 'acquired_at=[^[:space:]]+' "$LOCK_DIR/holder" 2>/dev/null | cut -d= -f2)

@@ -6,7 +6,7 @@
 #   - Skips files in danger_paths (per detect-changes.sh's danger_hit).
 #   - `git add -A` minus dangerous paths.
 #   - If nothing to stage, exits 1 (so caller knows there was nothing to commit).
-#   - Commit message: `auto: WIP on <branch> [<HH:MM:SS>]`. Skill amends afterward.
+#   - Commit message: `auto: WIP on <branch> [<HH:MM:SS>]`.
 #   - Prints the resulting commit SHA to stdout, or empty + non-zero exit if nothing committed.
 #
 # Required env: CLAUDE_PROJECT_DIR.

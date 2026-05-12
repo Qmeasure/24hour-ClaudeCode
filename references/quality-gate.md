@@ -1,6 +1,6 @@
 # Quality gate — multi-agent review evaluation
 
-The center of Step 9. Goal: **adopt every valid piece of feedback** (yes, including Minor / Nit) without getting trapped in noise loops.
+Manual review-evaluation reference. In normal 24hour-ClaudeCode operation, the Stop hook waits for the current head SHA and uses the machine-readable Claude Code Action verdict as the merge gate. Use this file only when manually interpreting reviewer feedback.
 
 ## 0. Timing tiers (non-negotiable)
 
@@ -196,14 +196,14 @@ A single PR may loop 9.2 ↔ 9.4 two or three times before all reviewers go sile
 
 ## 6. "All silent" / "all approved" — gate exit
 
-Enter Step 10 when any of:
+In the legacy manual flow, enter Step 10 when any of:
 
 - Every speaking agent has `reviewDecision=APPROVED`
 - Every comment from every agent has been replied to (adopted or explained)
 - Tier A: 8 min of total silence; Tier B: 15 min of total silence
 - 60-minute wall-clock cap
 
-When the condition is met → run `gh pr merge --auto --merge <N>` immediately. Do not ask the user.
+When the condition is met in manual mode, enable auto-merge only after confirming the current-SHA CI and review gate. In the plugin's normal automatic mode, do not run merge manually; the Stop hook does it.
 
 ⚠️ **Tier A silence backstop:** if 8 min elapse and `reviewers=` is still empty, run `gh run list -w claude-code-review.yml --limit 3`. If the workflow never ran or all runs failed → this is `blockers.md` #7 (Actions didn't trigger), stop and tell the user.
 

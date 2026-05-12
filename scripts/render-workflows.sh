@@ -240,10 +240,49 @@ $(build_review_priorities)
             - Group findings by severity: Reject (blocks merge) / Major / Minor / Nit.
             - Skip trivial nits if the PR is large; lead with structural concerns that align or conflict with the repo summary above.
             - Be concise. No preamble. No "great work!" filler. State the issue, the impact, the suggested change.
+            - Produce a machine-readable verdict for exactly PR head SHA \${{ github.event.pull_request.head.sha }}.
+            - Write the verdict to \`review-verdict-\${{ github.event.pull_request.head.sha }}.json\` in the workspace if file writes are available.
+            - Also include the same JSON in the sticky PR comment inside this hidden block:
+              <!-- claude-review-verdict
+              { ... }
+              -->
+            - Verdict schema:
+              {
+                "schema_version": 1,
+                "pr_number": \${{ github.event.pull_request.number }},
+                "head_sha": "\${{ github.event.pull_request.head.sha }}",
+                "reviewer": "claude-code-action",
+                "review_run_id": "\${{ github.run_id }}",
+                "verdict": "pass | fail | needs_human | inconclusive",
+                "summary": "string",
+                "blocking_findings": [
+                  {
+                    "id": "stable-id",
+                    "severity": "critical | major | minor",
+                    "category": "correctness | security | test | maintainability | performance | compatibility",
+                    "path": "src/file.ts",
+                    "line": 42,
+                    "title": "string",
+                    "message": "string",
+                    "evidence": "string",
+                    "suggested_fix": "string"
+                  }
+                ],
+                "non_blocking_findings": [],
+                "confidence": "high | medium | low"
+              }
+            - Validation: verdict=pass requires blocking_findings=[]; verdict=fail requires at least one blocking finding; needs_human/inconclusive must not request automatic rework.
           claude_args: |
             --max-turns $REVIEW_MAX_TURNS
             --model $REVIEW_MODEL
           use_sticky_comment: true
+
+      - name: Upload review verdict
+        if: \${{ hashFiles(format('review-verdict-{0}.json', github.event.pull_request.head.sha)) != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: review-verdict-\${{ github.event.pull_request.head.sha }}
+          path: review-verdict-\${{ github.event.pull_request.head.sha }}.json
 EOF
 }
 

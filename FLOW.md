@@ -11,8 +11,9 @@ This document is the single source of truth for the plugin's runtime behavior. I
 | Hook | Trigger | Script | Timeout | Role |
 |---|---|---|---|---|
 | `SessionStart` | Session start, `/clear`, auto-compact (matcher: `startup\|clear\|compact`) | `hooks/bootstrap.sh` | 10s | Detect environment; inject runtime contract or onboarding instructions |
+| `UserPromptSubmit` | User prompt submission; detects `/goal` | `hooks/goal-submit.sh` | 5s | Arm Goal-mode shipping guard and inject ready-to-ship marker contract |
 | `PostToolUse` | After every `Edit` / `Write` / `MultiEdit` tool call (matcher: `Edit\|Write\|MultiEdit`) | `hooks/post-tool-use.sh` | 5s | Light marker — touches `<runtime>/dirty`. Does no real work. |
-| `Stop` | Turn boundary — when the main agent finishes a response | `hooks/stop.sh` | 900s | Heavy worker — owns the entire commit/push/PR/poll/decide loop |
+| `Stop` | Turn boundary — when the main agent finishes a response | `hooks/stop.sh` | 7200s | Heavy worker — owns the entire commit/push/PR/current-SHA review loop |
 
 **Why this split:** `PostToolUse` fires after every tool call (too granular for "commit when work is done"). `Stop` fires once per turn — exactly when "Claude has finished a coherent set of edits" should produce a commit. The marker pattern lets `Stop` skip work fast on chat-only turns.
 
@@ -20,7 +21,7 @@ Hook output formats (per the Claude Code spec):
 
 ```jsonc
 // Informational — Claude is allowed to stop
-{"hookSpecificOutput": {"hookEventName": "Stop", "additionalContext": "<text>"}}
+{"systemMessage": "<text>"}
 
 // Block stop — feeds `reason` back to Claude as next-turn context
 {"decision": "block", "reason": "<text>"}
@@ -28,7 +29,7 @@ Hook output formats (per the Claude Code spec):
 
 ---
 
-## Phase 0 — Install & Onboard (one-time per repo)
+## Phase 0 — Install & Onboard
 
 Triggered by the user manually, not by a hook.
 
@@ -39,7 +40,7 @@ Triggered by the user manually, not by a hook.
 └─────────────────────────────────────────────────────────────────────┘
                               │
                               ▼
-              Plugin lands at <project>/.claude/plugins/24hour-ClaudeCode/
+              Plugin is installed in Claude Code's plugin cache for this machine
                               │
                               ▼
 ┌─ User runs ─────────────────────────────────────────────────────────┐
@@ -47,7 +48,7 @@ Triggered by the user manually, not by a hook.
 └─────────────────────────────────────────────────────────────────────┘
                               │
                               ▼
-   scripts/configure-actions.sh:
+   Per repo, `/24hour-ClaudeCode:setup` runs scripts/configure-actions.sh:
      1. Verify gh / claude / git installed + authenticated (workflow scope)
      2. Auto-detect Claude App on this repo via `scripts/check-claude-app.sh`
         (check_suites side-channel: `gh api repos/.../commits/.../check-suites`
@@ -169,7 +170,15 @@ That's the entire role of `PostToolUse`. No JSON output. No commits. The dirty f
 **Trigger:** Claude finishes the response (turn boundary).
 **Hook:** `Stop` (no matcher; fires every turn end).
 
-This is the workhorse. It is **mode-aware** — `state.json.mode` ∈ {`idle`, `waiting_for_preflight_merge`, `waiting_for_checks`, `ready_for_rework`, `merged`}.
+This is the workhorse. It is **mode-aware** — `state.json.mode` ∈ {`idle`, `waiting_for_preflight_merge`, `waiting_for_review`, `ready_for_rework`, `merged`, `stopped`}. Legacy `waiting_for_checks` state is accepted and routed through `waiting_for_review`.
+
+If a user started work with `/goal ...`, `hooks/goal-submit.sh` writes `<runtime>/goal-guard.json` and injects the ready-to-ship marker contract through `UserPromptSubmit`. Stop will not ship while that guard exists unless Claude's latest message ends with this exact final non-empty line outside any code block:
+
+```text
+<24hour-ClaudeCode-goal-complete ready-to-ship="true" />
+```
+
+This avoids the unsafe case where `/goal` is still running across turns but the plugin submits a PR after an intermediate diff. The Stop hook also reads Claude Code's native `goal_status` transcript attachments as a fallback, but same-turn shipping relies on the marker because the native `/goal` evaluator runs after project Stop hooks on current Claude Code builds.
 
 ```
 ┌─ Stop hook fires → stop.sh ─────────────────────────────────────────┐
@@ -190,6 +199,9 @@ This is the workhorse. It is **mode-aware** — `state.json.mode` ∈ {`idle`, `
 │  │  ─────────────────────────────────────────────────────────────  ││
 │  │  1. detect-changes.sh — classify files (code / lock / docs /   ││
 │  │       secrets / workflow / danger)                              ││
+│  │     └─ if goal guard is active and latest assistant message     ││
+│  │        lacks the ready-to-ship marker → emit systemMessage and ││
+│  │        do NOT commit/push/PR.                                  ││
 │  │     └─ buckets.workflow non-empty AND                           ││
 │  │        repair.allow_workflow_in_pr ≠ true →                     ││
 │  │           1a. Refuse if .github/workflows/* in committed       ││
@@ -219,56 +231,53 @@ This is the workhorse. It is **mode-aware** — `state.json.mode` ∈ {`idle`, `
 │  │  4. auto-commit.sh — stage non-danger files,                    ││
 │  │       commit "auto: WIP on <branch> [HH:MM:SS]" (placeholder) ││
 │  │  5. git push -u origin <branch>                                ││
-│  │  6. ensure-pr.sh — gh pr view || gh pr create --draft --fill   ││
+│  │  6. ensure-pr.sh — gh pr view || gh pr create --fill           ││
 │  │  7. Iteration accounting:                                       ││
 │  │     • mode was ready_for_rework → iteration += 1               ││
 │  │     • mode was idle → iteration = 1 (first push for this PR)   ││
 │  │  8. State transitions:                                          ││
-│  │     • mode = waiting_for_checks                                 ││
+│  │     • mode = waiting_for_review                                 ││
 │  │     • pr_number = N                                             ││
+│  │     • current_head_sha = git rev-parse HEAD                    ││
 │  │     • Clear <runtime>/dirty                                     ││
-│  │  9. Initial poll-github.sh (best effort baseline)              ││
-│  │ 10. Emit additionalContext:                                    ││
-│  │     "Iteration #N. PR #M (draft) at <url>. CI starting."       ││
-│  │     exit 0  (Claude is allowed to stop; next Stop resumes)     ││
+│  │  9. Mark PR ready, then immediately enter Case B on this same  ││
+│  │     Stop hook invocation. Claude is not allowed to stop until  ││
+│  │     Case B reaches pass, block-worthy feedback, or safe stop.  ││
 │  │                                                                ││
 │  ├────────────────────────────────────────────────────────────────┤│
 │  │                                                                ││
-│  │  CASE B — mode = waiting_for_checks                            ││
-│  │           [POST-PR BRANCH — POLL & DECIDE]                      ││
+│  │  CASE B — mode = waiting_for_review                            ││
+│  │           [POST-PR BRANCH — CURRENT-SHA REVIEW GATE]            ││
 │  │  ─────────────────────────────────────────────────────────────  ││
-│  │  1. wait-for-checks.sh --pr N --timeout=config.repair.wait_s   ││
-│  │     • Returns 0: all checks reached terminal conclusion        ││
-│  │     • Returns 1: timeout — emit "still running" info, exit 0   ││
-│  │  2. poll-github.sh — full snapshot to <runtime>/feedback.json: ││
-│  │     • PR state + mergeStateStatus + isDraft                     ││
-│  │     • All checks (with conclusions)                             ││
-│  │     • All reviews (state + body)                                ││
-│  │     • All comments (issue + inline review comments)             ││
-│  │     • Failed-job logs (last 50 lines per failed check)          ││
-│  │  3. decide-feedback.sh — apply the matrix:                      ││
+│  │  1. HEAD_SHA = git rev-parse HEAD                              ││
+│  │  2. gh pr ready N (noop if already ready)                      ││
+│  │  3. wait-for-current-sha-status.sh --pr N --sha HEAD_SHA       ││
+│  │     waits synchronously for current-SHA CI + Claude Code       ││
+│  │     Review workflow. Timeout/missing/inconclusive is a safe    ││
+│  │     stop, not a retry-on-next-stop.                             ││
+│  │  4. fetch-review-verdict.sh --pr N --sha HEAD_SHA --run-id R   ││
+│  │     reads review-verdict-<sha> artifact first, hidden JSON     ││
+│  │     comment block second. Any SHA mismatch is stale.           ││
+│  │  5. decide-current-sha-feedback.sh — apply the matrix:         ││
 │  │                                                                ││
-│  │     ── feedback_good ──                                         ││
-│  │     gh pr merge --auto --merge (or squash/rebase per config)   ││
+│  │     ── pass ──                                                  ││
+│  │     gh pr merge --auto --squash                                ││
 │  │     mode = "merged"                                             ││
-│  │     emit "✅ PR #N merged: <url>", exit 0                       ││
+│  │     emit systemMessage success/auto-merge-enabled, exit 0      ││
 │  │                                                                ││
 │  │     ── rework_required ──                                       ││
 │  │     mode = "ready_for_rework"                                   ││
 │  │     return JSON:                                                ││
 │  │       {"decision":"block",                                      ││
-│  │        "reason":"PR #N feedback requires rework. Iter N+1/M.\n ││
-│  │                  <feedback summary>\n                           ││
-│  │                  Apply minimal fixes per rework-implementation."}││
+│  │        "reason":"Current HEAD SHA feedback...\n                 ││
+│  │                  Fix only these findings in this WorkTree."}    ││
 │  │     ⚠ This blocks Claude from stopping. Claude reads `reason`   ││
 │  │       as next-turn context and continues editing.               ││
 │  │                                                                ││
-│  │     ── inconclusive ──                                          ││
-│  │     emit "Polled, can't decide yet. Will retry next stop."     ││
-│  │     exit 0                                                      ││
-│  │                                                                ││
-│  │     ── stop:max_iterations / stop:repeated_failure ──           ││
-│  │     emit STOP message + invoke failure-escalation skill        ││
+│  │     ── stop ──                                                  ││
+│  │     Missing/stale verdict, infra failure, needs_human,         ││
+│  │     inconclusive, timeout, repeated feedback, or max rounds.   ││
+│  │     mode = "stopped"; emit systemMessage; do not block.        ││
 │  │     exit 0                                                      ││
 │  │                                                                ││
 │  ├────────────────────────────────────────────────────────────────┤│
@@ -395,15 +404,18 @@ Claude finishes turn → Stop hook fires
 
 ## Phase 5 — Auto-merge & success
 
-When `decide-feedback.sh` returns `feedback_good`:
+When `decide-current-sha-feedback.sh` returns `pass`:
 
 ```
-Stop hook (mode=waiting_for_checks):
-  1. gh pr merge "$PR" --auto --merge   (or --squash / --rebase per config)
-  2. state.mode = "merged"
-  3. record_event "merged"
-  4. emit additionalContext: "✅ PR #N merged: <url>"
-  5. exit 0
+Stop hook (mode=waiting_for_review):
+  1. Verify PR headRefOid == current HEAD SHA
+  2. Verify CI success + verdict=pass + blocking_findings=[] + confidence != low
+  3. gh pr ready "$PR"
+  4. gh pr merge "$PR" --auto --squash
+  5. state.mode = "merged"
+  6. record_event "merged"
+  7. emit systemMessage: "merged" or "auto-merge enabled"
+  8. exit 0
                               │
                               ▼
 Claude sees the success message; the user's task is done.
@@ -428,7 +440,7 @@ On the NEXT Stop fire (any subsequent turn):
                   │                                       │
                   ▼                                       ▼
        ┌─────────────────────┐                 ┌──────────────────────┐
-       │    idle             │ ─── PHASE 3.A ─→│ waiting_for_checks   │
+       │    idle             │ ─── PHASE 3.A ─→│ waiting_for_review   │
        │    iteration=0      │                 │  iteration=1         │
        └─────────────────────┘                 └──────────────────────┘
                   ▲                                       │
@@ -439,7 +451,7 @@ On the NEXT Stop fire (any subsequent turn):
         │  (cleanup pass)   │                       └─────┬─────┘
         └─────────▲─────────┘                             │
                   │                                       │
-        feedback_good                                rework_required
+        pass                                         rework_required
                   │                                       │
                   │                                       ▼
                   │                          ┌──────────────────────┐
@@ -460,11 +472,12 @@ On the NEXT Stop fire (any subsequent turn):
 
 ## Stop conditions (loop termination)
 
-Enforced by `scripts/check-stop-conditions.sh` (in pre-PR branch) and `scripts/decide-feedback.sh` (in post-PR branch):
+Enforced by `scripts/check-stop-conditions.sh` (in pre-PR branch), `scripts/review-loop/decide-current-sha-feedback.sh`, and the Stop hook merge gate (in post-PR branch):
 
 | Condition | Token | Where caught |
 |---|---|---|
-| `iteration >= max_iterations` (default 5) | `stop:max_iterations` | decide-feedback.sh |
+| `round >= max_rounds` (default 5) | `stop:max_rounds` | decide-current-sha-feedback.sh |
+| Same blocking feedback repeats twice | `stop:repeated_feedback` | stop.sh feedback hash |
 | Same failure 2 iterations in a row | `stop:repeated_failure` | check-stop-conditions.sh (via `<runtime>/last-run.json` fail_streak) |
 | Branch is protected | `stop:protected_branch` | check-stop-conditions.sh |
 | `gh auth status` fails | `stop:gh_auth_lost` | check-stop-conditions.sh |
@@ -472,7 +485,7 @@ Enforced by `scripts/check-stop-conditions.sh` (in pre-PR branch) and `scripts/d
 | Edit touches `danger_paths` | `stop:danger_path` | stop.sh (via detect-changes.sh) |
 
 When any fires:
-- Stop hook emits an `additionalContext` STOP message.
+- Stop hook emits a `systemMessage` STOP message.
 - `failure-escalation` skill is invoked to format the user-facing message.
 - Loop terminates; user must intervene.
 
@@ -483,14 +496,14 @@ When any fires:
 ```
 <project>/.claude/runtime/24hour-ClaudeCode/
 ├── .gitignore         # contains `*` — runtime files never leak into git diffs
-├── state.json         # {enabled, repo, branch, pr_number, mode, iteration, max_iterations, last_status}
+├── state.json         # mode, PR, iteration/round, current_head_sha, feedback hash
 ├── lock/              # directory; presence = stop.sh in flight
 │   └── holder         # {pid, acquired_at}
 ├── lock.queued        # presence = another Stop fired during lock-held
 ├── dirty              # presence = code-modifying tool used this turn (set by post-tool-use.sh)
 ├── last-run.json      # {ts, status, detail, fail_streak} per stop.sh invocation
 ├── current-pr.json    # last known PR snapshot (number, url, isDraft, head SHA, ...)
-└── feedback.json      # last poll: pr + checks + reviews + comments + failed_jobs
+└── feedback.json      # optional diagnostics from poll-github.sh
 ```
 
 All writes are atomic (temp + mv). Direct edits are forbidden — always go through `scripts/runtime-state.sh`, `scripts/runtime-lock.sh`, or `scripts/poll-github.sh`.
@@ -513,31 +526,18 @@ T+0:30   Claude finishes editing src/auth/handler.ts
                • verify (lint/typecheck/test) ✓
                • commit "auto: WIP on feat/oauth-refresh [10:00:30]"
                • push origin feat/oauth-refresh
-               • gh pr create --draft → PR #142
-               • mode = waiting_for_checks
-               • emit "Iteration #1. PR #142 draft. CI starting."
-
-T+0:30   Claude is allowed to stop. User reads the message.
-         User says: "looks good"
-
-T+0:31   Claude responds with brief confirmation (no edits)
-         └─ Stop hook fires (turn end)
-            └─ Case B: waiting_for_checks branch
-               • wait-for-checks.sh — CI still running, timeout
-               • emit "CI still running. Will check next stop."
-
-T+3:00   User: "check progress"
-
-T+3:01   Claude responds
-         └─ Stop hook fires
-            └─ Case B: wait-for-checks ✓ (all green)
-               • poll-github → feedback.json: all success, no review comments
-               • decide-feedback → feedback_good
-               • gh pr merge --auto --merge 142
+               • gh pr create → PR #142
+               • gh pr ready 142
+               • mode = waiting_for_review
+            └─ Case B: current-SHA review gate
+               • wait-for-current-sha-status.sh waits for CI + Claude Code Review
+               • fetch-review-verdict.sh reads review-verdict-<sha>.json
+               • decide-current-sha-feedback → pass
+               • gh pr merge --auto --squash 142
                • mode = merged
-               • emit "✅ PR #142 merged: <url>"
+               • emit "PR #142 merged" or "Auto-merge enabled"
 
-T+3:01   User sees success message.
+T+3:01   User sees success message. No "continue" prompt was required.
 
 T+3:02   User starts a new feature in the same worktree
          └─ Stop hook fires later (mode=merged)

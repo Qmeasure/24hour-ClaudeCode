@@ -43,10 +43,12 @@ jobs:
           prompt: |
             You are a senior Claude Code Plugin maintainer reviewing this PR.
             The repository is the `24hour-ClaudeCode` Plugin — a published Claude Code plugin
-            that turns any git worktree into an autonomous PR loop (write code → SessionStart
-            bootstraps → PostToolUse marks dirty → Stop hook commits/pushes/opens PR/polls
-            CI/decides feedback → either auto-merges or returns `decision:block` to feed
-            rework feedback back to the agent). Architecture details: `FLOW.md`.
+            that turns any git worktree into an autonomous PR loop (write code, preferably
+            through `/goal` → SessionStart bootstraps → UserPromptSubmit arms the Goal guard
+            → PostToolUse marks dirty → Stop hook waits for Goal readiness, commits/pushes/
+            opens PR, waits for current-SHA CI + Claude Code Action verdict, then either
+            auto-merges or returns `decision:block` to feed rework feedback back to the
+            agent). Architecture details: `FLOW.md`.
 
             Your review is **not** generic code review. Evaluate against these
             Plugin-Maintainer dimensions:
@@ -56,22 +58,26 @@ jobs:
                (`24hour-ClaudeCode`). Version bumps must use `scripts/bump-version.sh`
                so both files stay in sync. Flag any drift as **major**.
 
-            2. **Hook architecture coherence** — three hooks have STRICT separation of duties:
+            2. **Hook architecture coherence** — four hooks have STRICT separation of duties:
                - `SessionStart` (`hooks/bootstrap.sh`): env detection + content injection
+               - `UserPromptSubmit` (`hooks/goal-submit.sh`): `/goal` shipping guard only
                - `PostToolUse` (`hooks/post-tool-use.sh`): light marker only (touches `<runtime>/dirty`)
                - `Stop` (`hooks/stop.sh`): the heavy worker (mode-aware orchestrator)
 
                Flag as **blocker** any change that:
                - Moves heavy logic from Stop to PostToolUse (wrong granularity, wastes turns)
+               - Lets Goal mode intermediate turns commit/push/open PR before the ready-to-ship marker
                - Adds git operations to bootstrap or post-tool-use
                - Changes the matcher from `startup|clear|compact` for SessionStart (would lose `/clear`/auto-compact resilience)
 
             3. **State machine integrity** — `state.json.mode` ∈
-               {`idle` | `waiting_for_checks` | `ready_for_rework` | `merged`}.
+               {`idle` | `waiting_for_preflight_merge` | `waiting_for_review` | `ready_for_rework` | `merged` | `stopped`}.
                Transitions in `hooks/stop.sh` must be consistent:
-               - idle/ready_for_rework + diff → waiting_for_checks (push)
-               - waiting_for_checks + feedback_good → merged (auto-merge)
-               - waiting_for_checks + rework_required → ready_for_rework (decision:block)
+               - idle/ready_for_rework + diff + no active Goal guard → waiting_for_review (push)
+               - idle/ready_for_rework + diff + active Goal guard without marker → no commit/push/PR
+               - waiting_for_review + pass → merged (auto-merge)
+               - waiting_for_review + rework_required → ready_for_rework (decision:block)
+               - waiting_for_review + missing/stale/inconclusive/infra → stopped (systemMessage)
                - merged → idle (cleanup pass)
 
                Flag any new mode that isn't documented in FLOW.md, or any case branch that
@@ -83,9 +89,9 @@ jobs:
                Reference: official Claude Code hooks spec.
 
             5. **Cross-script consistency** — tokens used between scripts must agree:
-               - `decide-feedback.sh` returns: `feedback_good | rework_required | inconclusive | stop:max_iterations`
-               - `stop.sh` case-matches all four explicitly. Flag missing cases.
-               - `check-stop-conditions.sh` returns: `continue | stop:protected_branch | stop:gh_auth_lost | stop:diff_too_large | stop:repeated_failure`
+               - `decide-current-sha-feedback.sh` returns: `pass | rework_required | stop`
+               - `stop.sh` case-matches all three explicitly. Flag missing cases.
+               - `check-stop-conditions.sh` returns: `continue | stop:max_iterations | stop:protected_branch | stop:gh_auth_lost | stop:repeated_failure`
                - `stop.sh` handles all `stop:*` tokens. Flag drift.
 
             6. **Anti-pattern explicitness** — when behavior changes, the failure mode must
@@ -131,8 +137,9 @@ jobs:
                 Chinese + English trigger keywords. Removing or auto-translating them
                 breaks user discovery. Flag deletion of existing keywords as **major**.
 
-            14. **DoD measurability** — success state is PR `state=MERGED`. Not "auto-merge
-                enabled". Not "CI green". Flag any softening of the DoD anywhere
+            14. **DoD measurability** — success state is PR `state=MERGED`, or GitHub
+                auto-merge is armed after current HEAD SHA CI success + verdict pass.
+                Not merely "CI green". Flag any softening of the DoD anywhere
                 (`SKILL.md` / `README.md` / sub-skills / FLOW.md).
 
             15. **Internal link integrity** — `[text](path/to/file.md)` and `[text](#anchor)`
@@ -161,7 +168,7 @@ jobs:
                 - `hooks/stop.sh` Case E (`mode=waiting_for_preflight_merge`)
                   polls + rebases on merge
                 - Override knob: `repair.allow_workflow_in_pr` (default false)
-                - State machine has 5 modes including `waiting_for_preflight_merge`
+                - State machine includes `waiting_for_preflight_merge`, `waiting_for_review`, and `stopped`
 
                 Flag as **blocker**:
                 - Any change that bundles workflow + code in a non-preflight PR
@@ -183,7 +190,48 @@ jobs:
             If the PR has no issues across all 18 dimensions, post a single approval review:
             "Looks good — checked all 18 plugin-maintainer dimensions, no blocking issues."
             Do not invent issues to look thorough.
+
+            Machine-readable verdict contract:
+            - Produce a verdict for exactly PR head SHA ${{ github.event.pull_request.head.sha }}.
+            - Write it to review-verdict-${{ github.event.pull_request.head.sha }}.json if file writes are available.
+            - Include the same JSON in the sticky PR comment hidden block:
+              <!-- claude-review-verdict
+              { ... }
+              -->
+            - Schema:
+              {
+                "schema_version": 1,
+                "pr_number": ${{ github.event.pull_request.number }},
+                "head_sha": "${{ github.event.pull_request.head.sha }}",
+                "reviewer": "claude-code-action",
+                "review_run_id": "${{ github.run_id }}",
+                "verdict": "pass | fail | needs_human | inconclusive",
+                "summary": "string",
+                "blocking_findings": [
+                  {
+                    "id": "stable-id",
+                    "severity": "critical | major | minor",
+                    "category": "correctness | security | test | maintainability | performance | compatibility",
+                    "path": "src/file.ts",
+                    "line": 42,
+                    "title": "string",
+                    "message": "string",
+                    "evidence": "string",
+                    "suggested_fix": "string"
+                  }
+                ],
+                "non_blocking_findings": [],
+                "confidence": "high | medium | low"
+              }
+            - Validation: verdict=pass requires blocking_findings=[]; verdict=fail requires at least one blocking finding; needs_human/inconclusive must not request automatic rework.
           claude_args: |
             --max-turns 6
             --model claude-sonnet-4-6
           use_sticky_comment: true
+
+      - name: Upload review verdict
+        if: ${{ hashFiles(format('review-verdict-{0}.json', github.event.pull_request.head.sha)) != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: review-verdict-${{ github.event.pull_request.head.sha }}
+          path: review-verdict-${{ github.event.pull_request.head.sha }}.json

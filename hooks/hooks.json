@@ -26,13 +26,26 @@
         ]
       }
     ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/goal-submit.sh\"",
+            "timeout": 5,
+            "async": false
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/stop.sh\"",
-            "timeout": 900,
+            "timeout": 7200,
+            "statusMessage": "Waiting for GitHub Claude Code Action review...",
             "async": false
           }
         ]

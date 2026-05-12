@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check-stop-conditions.sh — Read runtime state + config + feedback, decide stop/continue.
+# check-stop-conditions.sh — Read runtime state + config, decide stop/continue.
 #
 # Output: a single token on stdout, exit code matching:
 #   continue                          exit 0
@@ -9,7 +9,6 @@
 #   stop:gh_auth_lost                 exit 13
 #   stop:push_rejected                exit 14
 #   stop:user_judgement               exit 15
-#   (exit 16 was stop:diff_too_large — removed; we don't cap diff size)
 #   stop:danger_path                  exit 17
 #   stop:preflight_closed             exit 18  (raised by stop.sh, not here — reserved)
 #   stop:committed_workflow_changes   exit 19  (raised by stop.sh, not here — reserved)
@@ -84,13 +83,6 @@ if ! gh auth status >/dev/null 2>&1; then
   echo "stop:gh_auth_lost"
   exit 13
 fi
-
-# 5. (Removed) Diff-size guard.
-# Used to fire stop:diff_too_large when working-tree diff exceeded
-# repair.max_diff_lines. Removed because (a) the developer's first commit can
-# legitimately be large for a new module, and (b) review-time judgement —
-# which the auto-review action already does — is the right place to flag
-# oversized changes, not pre-commit static threshold.
 
 echo "continue"
 exit 0

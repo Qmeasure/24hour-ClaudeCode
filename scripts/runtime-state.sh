@@ -36,7 +36,7 @@ case "$cmd" in
     repo_nwo=$(cd "$PROJECT_DIR" && gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || echo "")
     tmp=$(mktemp)
     jq -n --arg repo "$repo_nwo" --arg wt "$PROJECT_DIR" --arg br "$branch" \
-       '{enabled:true, repo:$repo, worktree:$wt, branch:$br, pr_number:null, iteration:0, max_iterations:5, mode:"idle", last_status:"ready"}' \
+       '{enabled:true, repo:$repo, worktree:$wt, branch:$br, pr_number:null, iteration:0, round:0, max_iterations:5, max_rounds:5, mode:"idle", last_status:"ready", current_head_sha:null, last_reviewed_sha:null, last_feedback_hash:null, same_feedback_count:0, wait_started_at:null}' \
        > "$tmp"
     mv "$tmp" "$STATE_FILE"
     ;;

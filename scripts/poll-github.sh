@@ -2,7 +2,7 @@
 # poll-github.sh — Snapshot PR state, checks, reviews, comments, and failed-job logs
 # into <runtime>/feedback.json.
 #
-# Used by hooks/stop.sh in waiting_for_checks mode and by the babysit-pr skill.
+# Used by hooks/stop.sh for diagnostics and by the babysit-pr skill.
 #
 # Output schema (atomic write to feedback.json):
 #   {

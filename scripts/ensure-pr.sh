@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
-# ensure-pr.sh — Ensure a draft PR exists for the current branch. Update runtime/current-pr.json.
+# ensure-pr.sh — Ensure a PR exists for the current branch. Update runtime/current-pr.json.
 #
 # Behavior:
 #   - Checks if a PR already exists for current branch via `gh pr view`.
 #   - If yes: writes its metadata to <runtime>/current-pr.json and exits 0.
-#   - If no: creates a draft PR with `gh pr create --draft --fill`.
+#   - If no: creates a ready PR with `gh pr create --fill`.
 #     - `--fill` uses the latest commit subject as title and commit body as PR body.
-#     - Skill is responsible for amending both later.
 #   - Output: prints the PR number to stdout.
 #
 # Required env: CLAUDE_PROJECT_DIR.
@@ -33,9 +32,9 @@ if [[ -n "$pr_json" ]] && [[ "$(echo "$pr_json" | jq -r '.state')" == "OPEN" ]];
   exit 0
 fi
 
-# No PR exists; create one as draft.
-# `--fill` derives title/body from commit. Skill amends later.
-gh pr create --draft --fill >/dev/null 2>&1 || {
+# No PR exists; create one ready for review.
+# `--fill` derives title/body from the commit.
+gh pr create --fill >/dev/null 2>&1 || {
   echo "ensure-pr: gh pr create failed" >&2
   exit 2
 }

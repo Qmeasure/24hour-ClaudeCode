@@ -41,6 +41,6 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/check-actions.sh" -v
 
 After health check passes, tell the user:
 
-> "✓ Setup complete. The auto-PR loop is now active for this repo. Open a worktree (`git worktree add ../my-feature -b feat/my-feature`) and edit code — the on-edit hook will kick in automatically.
+> "✓ Setup complete. The auto-PR loop is now active for this repo. Open a worktree (`git worktree add ../my-feature -b feat/my-feature`), start a fresh Claude Code session inside it, and use `/goal <your objective>` for feature work. The Stop hook will ship only after the goal is ready.
 >
 > To verify: run `/24hour-ClaudeCode:status` for runtime state, or `/clear` to re-trigger SessionStart and see the runtime contract injected."

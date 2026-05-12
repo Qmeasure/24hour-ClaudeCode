@@ -1,11 +1,11 @@
 ---
 name: ci-feedback-analysis
-description: Read GitHub Actions check failure logs from <runtime>/feedback.json or `gh run view`, classify the failure (test/lint/type/build/infra), and produce a minimal-fix plan. Use after the babysit skill detects a failed check; never re-run failed CI without understanding the cause.
+description: Read GitHub Actions check failure logs from the Stop hook's current-SHA status, <runtime>/feedback.json diagnostics, or `gh run view`; classify the failure (test/lint/type/build/infra), and produce a minimal-fix plan. Use after the Stop hook returns CI feedback or babysit-pr detects a failed check; never re-run failed CI without understanding the cause.
 ---
 
 # CI Feedback Analysis
 
-You're here because a required CI check has `conclusion=failure` (or `cancelled`) and the babysit-pr skill or on-edit hook handed off to you.
+You're here because a required CI check has `conclusion=failure` (or `cancelled`) and the Stop hook's `decision:block.reason` or the babysit-pr skill handed off to you.
 
 <EXTREMELY-IMPORTANT>
 **Never auto-rerun a failed check.** Diagnose first. If the same check failed in iteration N-1 and now fails in iteration N for the same reason, that's the `stop:repeated_failure` condition — escalate via failure-escalation, do not loop.

@@ -48,7 +48,7 @@ emit() {
 if [[ -f "$CONFIG_FILE" ]]; then
   enabled=$(jq -r '.enabled // true' "$CONFIG_FILE" 2>/dev/null || echo "true")
   if [[ "$enabled" == "false" ]]; then
-    emit "[24hour-ClaudeCode] Runtime is disabled for this project ($CONFIG_FILE has enabled=false). The PostToolUse hook will not auto-commit. Re-enable with /24hour-ClaudeCode:enable."
+    emit "[24hour-ClaudeCode] Runtime is disabled for this project ($CONFIG_FILE has enabled=false). The Stop hook will not auto-commit or open PRs. Re-enable with /24hour-ClaudeCode:enable."
   fi
 fi
 
@@ -187,7 +187,7 @@ payload=$(cat <<EOF
 <EXTREMELY-IMPORTANT>
 The 24hour-ClaudeCode auto-PR-loop runtime is ACTIVE in this worktree.
 
-Read the runtime contract below. Every code edit triggers the auto-commit pipeline; you are responsible for amending the placeholder commit, marking PR ready, enabling auto-merge, and babysitting until \`state=MERGED\`.
+Read the runtime contract below. Prefer Claude Code /goal mode for feature work. The Stop hook owns commit, push, PR creation, current-SHA review waiting, rework feedback, and auto-merge. Do not manually commit, push, or open PRs unless the hook explicitly stops and asks for human action.
 
 Repo: ${repo_nwo:-<unknown>}
 Branch: ${branch:-<unknown>}

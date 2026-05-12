@@ -54,6 +54,24 @@ echo "wait 10 min" && sleep 600     # same
 
 **Forbidden:** saying "I'll come back later" then ending the turn.
 
+## B2. Shipping before `/goal` is actually done
+
+### Wrong
+
+Treating any Stop hook with a non-empty diff as ready to commit while a Claude Code `/goal` is still active.
+
+### Why wrong
+
+Claude Code `/goal` and Stop hooks both run after each turn. A goal can span many turns; intermediate turns often leave partial diffs. Committing those diffs opens premature PRs that do not satisfy the user's goal.
+
+### Right
+
+`goal-submit.sh` arms `<runtime>/goal-guard.json` for `/goal ...`. `stop.sh` must hold shipping while the guard exists unless Claude's latest message contains the exact ready-to-ship marker:
+
+```text
+<24hour-ClaudeCode-goal-complete ready-to-ship="true" />
+```
+
 ## C. Modifying the Monitor jq expression
 
 ### Wrong

@@ -1,6 +1,6 @@
 # Superset workspace integration
 
-This document explains how worktree-pr-flow plugs into the [Superset](https://docs.superset.sh) client.
+This document explains how 24hour-ClaudeCode plugs into the [Superset](https://docs.superset.sh) client.
 
 **Use case:** you manage multiple worktrees of one repo through Superset (each workspace = one feature/fix/chore worktree). When opening a workspace, you want **automatic verification** that Claude Code Actions is healthy.
 
@@ -124,7 +124,7 @@ Any ✗ exits non-zero.
 
 ```
 ╭─────────────────────────────────────────────────────────────────────╮
-│ worktree-pr-flow — workspace ready                                  │
+│ 24hour-ClaudeCode — workspace ready                                 │
 │   worktree: feat/my-thing                                           │
 │   path:     /path/to/worktree                                       │
 ╰─────────────────────────────────────────────────────────────────────╯

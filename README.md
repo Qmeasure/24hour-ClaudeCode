@@ -20,13 +20,13 @@ This plugin does **all of that** for you, automatically. **You write code; it sh
 
 ## How it feels in practice
 
-Here's what shipping one feature looks like:
+Here's the recommended way to ship one feature:
 
-> **You:** "Add CSV export to the reports page."
+> **You:** `/goal Add CSV export to the reports page.`
 >
-> *(Claude edits 3 files. You say "looks good".)*
+> *(Claude edits, verifies, and keeps working until the goal is met.)*
 >
-> **Claude:** "✅ I committed your changes, opened PR #142, and CI is running. I'll check back in a moment."
+> **Claude:** "Goal complete. I opened PR #142 and am waiting for CI and review."
 >
 > *(Two minutes later)*
 >
@@ -49,7 +49,7 @@ You never typed `git commit`, `gh pr create`, or clicked "merge". The plugin han
 ✅ **Good fit:**
 - You're working on a real GitHub project
 - You want Claude Code to ship features end-to-end without you nudging it
-- You're OK letting an automated process commit and push your code (it asks before any push; nothing happens secretly)
+- You're OK letting the worktree automation commit, push, open PRs, and enable auto-merge after the Goal is ready
 
 ❌ **Not a good fit (for now):**
 - You're doing exploratory work and don't want auto-commits yet
@@ -174,9 +174,17 @@ When Claude opens in `../my-feature`, the plugin auto-detects:
 - ✓ main is onboarded (config inherited automatically)
 - → **runtime is now ACTIVE in this worktree**. No setup needed.
 
-Tell Claude what to do. The plugin takes over:
+Tell Claude what to do. **Recommended:** use Claude Code `/goal` mode so the plugin waits until the goal is actually complete before it opens a PR:
 
-- Every code edit triggers an auto-commit pipeline (commit → push → draft PR)
+```text
+/goal Add CSV export to the reports page.
+```
+
+Non-Goal prompts still work for small, single-turn changes, but Goal mode is safer for feature work because it blocks PR creation during intermediate turns.
+
+The plugin takes over:
+
+- When the Goal is ready, or when a non-Goal turn ends with a real diff, the Stop hook runs the auto-commit pipeline (commit → push → PR)
 - The PR gets reviewed automatically (Claude or Codex, whichever you chose)
 - If review or CI fails, the plugin shows Claude the feedback and Claude fixes it — up to 5 retry rounds
 - When everything is green, the plugin enables auto-merge and waits for the PR to merge

@@ -20,13 +20,13 @@
 
 ## 用起来是什么感觉
 
-一个完整功能的开发,大概长这样:
+推荐用 `/goal` 开始一个完整功能:
 
-> **你:** "在报表页加个 CSV 导出功能。"
+> **你:** `/goal 在报表页加个 CSV 导出功能。`
 >
-> *(Claude 改了 3 个文件。你说"看着不错"。)*
+> *(Claude 修改、验证,并一直工作到 goal 达成为止。)*
 >
-> **Claude:** "✅ 我已经把改动 commit 了,开了 PR #142,CI 正在跑。等一下我看下结果。"
+> **Claude:** "Goal 已完成。我已打开 PR #142,正在等待 CI 和 review。"
 >
 > *(两分钟后)*
 >
@@ -49,7 +49,7 @@
 ✅ **适合的场景:**
 - 你在一个真实的 GitHub 项目上工作
 - 你希望 Claude Code 把整个 feature 开发到上线一气呵成,不用每一步都催它
-- 你能接受让自动化进程帮你 commit + push(每次 push 前会问你确认,不会偷偷干事)
+- 你能接受 worktree 自动化在 Goal 准备好后帮你 commit、push、开 PR、开启 auto-merge
 
 ❌ **暂时不适合的场景:**
 - 你在做探索性工作,还不想 commit
@@ -174,9 +174,17 @@ Claude 在 `../my-feature` 里启动后,plugin 自动检测:
 - ✓ main 已 onboard(配置自动继承)
 - → **当前 worktree 的 runtime 已激活**,不需要重做 setup。
 
-让 Claude 开始干活,plugin 全自动接管:
+让 Claude 开始干活。**推荐方式:** 用 Claude Code `/goal` 模式,这样 plugin 会等到目标真正完成后才发 PR:
 
-- 每次代码改动触发自动 commit 流水线(commit → push → draft PR)
+```text
+/goal 在报表页加个 CSV 导出功能。
+```
+
+非 Goal 普通 prompt 也支持,适合很小、单回合的修改。但完整 feature 推荐用 Goal 模式,因为它会阻止中间状态提前创建 PR。
+
+Plugin 会接管后续流程:
+
+- Goal 达成后,或非 Goal 回合结束且存在真实 diff 时,Stop hook 会运行自动 commit 流水线(commit → push → PR)
 - PR 自动进入 review(Claude 或 Codex,看你之前选的)
 - 如果 review 或 CI 失败,plugin 把具体反馈喂给 Claude,Claude 自动改 —— 最多重试 5 轮
 - 全绿了,plugin 开启 auto-merge,等 PR 合并

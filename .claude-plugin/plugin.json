@@ -1,6 +1,6 @@
 {
   "name": "24hour-ClaudeCode",
-  "description": "Auto-PR loop runtime: write code in a worktree → auto commit/push/PR → watch Claude Code Action review → adopt feedback → enable auto-merge → babysit until state=MERGED. SessionStart and PostToolUse hooks make it active without any slash command.",
+  "description": "Goal-aware Auto-PR loop runtime: use /goal in a worktree, then the Stop hook waits for completion before commit/push/PR, watches current-SHA Claude Code Action review, feeds back decision:block, and auto-merges when green. Non-Goal prompts still work for small changes.",
   "version": "1.0.14",
   "author": {
     "name": "Qmeasure"
@@ -13,6 +13,7 @@
     "github-actions",
     "review-loop",
     "worktree",
-    "auto-merge"
+    "auto-merge",
+    "goal-mode"
   ]
 }
