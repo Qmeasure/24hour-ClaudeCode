@@ -1,7 +1,7 @@
 {
   "name": "24hour-ClaudeCode",
   "description": "Goal-aware Auto-PR loop runtime: use /goal in a worktree, then the Stop hook waits for completion before commit/push/PR, watches current-SHA Claude Code Action review, feeds back decision:block, and auto-merges when green. Non-Goal prompts still work for small changes.",
-  "version": "1.0.14",
+  "version": "1.0.15",
   "author": {
     "name": "Qmeasure"
   },
