@@ -224,6 +224,13 @@ git worktree remove ../my-feature     # 删 worktree
 **自动审核太严 / 太松,能调吗?**
 能。review prompt **直接写在 workflow YAML 里**。改 `.github/workflows/claude-code-review.yml`(以及 `codex-review.yml` 如果用 Codex)的 `prompt:` 块,commit、push,下个 PR 自动生效,不需要重 setup。这个 prompt 在 onboarding 时已经按你 repo 的实际结构(top-level 目录、入口文件、敏感路径、repo 简介)定制好了。
 
+**怎么更新到最新版本?**
+```bash
+claude plugin marketplace update 24hour-ClaudeCode        # 从 GitHub 刷新 marketplace 元数据
+claude plugin update 24hour-ClaudeCode@24hour-ClaudeCode  # 安装最新版本
+```
+更新完**重启 Claude Code**(`/exit` 退出再 `claude` 进来),让新的 hook 加载进来。`claude plugin list` 可以查看当前已装版本。注意 plugin 更新**不会**改你项目 `.github/workflows/` 下的 workflow YAML —— 想重新生成,跑 `/24hour-ClaudeCode:setup` 即可。
+
 **怎么卸载?**
 ```
 /plugin uninstall 24hour-ClaudeCode

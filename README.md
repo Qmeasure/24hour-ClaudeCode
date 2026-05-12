@@ -224,6 +224,13 @@ Run `/24hour-ClaudeCode:status` — it shows the current PR, how many fix rounds
 **The auto-review is too strict / too loose. Can I tune it?**
 Yes. The review prompt is **inline in the workflow YAML** itself. Edit the `prompt:` block in `.github/workflows/claude-code-review.yml` (and/or `codex-review.yml`), commit, push. Changes apply to the next PR — no re-setup needed. The prompt is auto-tailored to your repo's actual structure (top-level dirs, entry files, danger paths, repo summary) at render time.
 
+**How do I update to the latest version?**
+```bash
+claude plugin marketplace update 24hour-ClaudeCode        # refresh marketplace metadata from GitHub
+claude plugin update 24hour-ClaudeCode@24hour-ClaudeCode  # install the new version
+```
+After updating, **restart Claude Code** (`/exit` then `claude` again) so the new hooks load. Check the installed version any time with `claude plugin list`. The workflow YAMLs in your project's `.github/workflows/` are *not* touched by a plugin update — re-run `/24hour-ClaudeCode:setup` if you want to regenerate them.
+
 **How do I uninstall it?**
 ```
 /plugin uninstall 24hour-ClaudeCode
