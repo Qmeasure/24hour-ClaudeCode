@@ -2,10 +2,12 @@
 # install-superset-config.sh — Install + verify Superset workspace integration.
 #
 # What this does:
-#   default mode: copy templates/superset-config.json → .superset/config.json,
+#   default mode: copy templates/superset-config.json → .superset/config.json
+#                 and templates/superset-{setup,run,teardown}.sh → .superset/,
 #                 then print explicit activation steps (commit, register repo, verify).
-#   --verify    : check whether activation is complete (file exists, hook references
-#                 check-actions.sh, file is committed). Returns non-zero on issues.
+#   --verify    : check whether activation is complete (config + hook scripts
+#                 exist, setup delegates to check-actions.sh, files are committed).
+#                 Returns non-zero on issues.
 #   --uninstall : delete .superset/config.json (with confirmation).
 #
 # Usage:
@@ -50,6 +52,7 @@ ask() {
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEMPLATE="$SCRIPT_DIR/../templates/superset-config.json"
+HOOK_PATHS=(".superset/setup.sh" ".superset/run.sh" ".superset/teardown.sh")
 
 if (( LOCAL == 1 )); then
   TARGET=".superset/config.local.json"
@@ -93,15 +96,42 @@ if (( VERIFY == 1 )); then
     err "$TARGET missing — run: bash scripts/install-superset-config.sh"
   fi
 
-  # 2. Setup hook exists & references check-actions.sh
-  if grep -q 'check-actions.sh' "$TARGET" 2>/dev/null; then
-    ok "Setup hook references scripts/check-actions.sh"
+  # 2. Config references the split hook scripts it expects Superset to run.
+  if jq -e '
+    (.setup // []) | index("./.superset/setup.sh")
+  ' "$TARGET" >/dev/null 2>&1 && \
+     jq -e '(.run // []) | index("./.superset/run.sh")' "$TARGET" >/dev/null 2>&1 && \
+     jq -e '(.teardown // []) | index("./.superset/teardown.sh")' "$TARGET" >/dev/null 2>&1; then
+    ok "Config references .superset/setup.sh, run.sh, and teardown.sh"
   else
-    warn "Setup hook does not reference check-actions.sh"
+    warn "Config does not reference all expected .superset/*.sh hook scripts"
     WARN_COUNT=$((WARN_COUNT+1))
   fi
 
-  # 3. check-actions.sh exists
+  # 3. Hook scripts exist and are executable.
+  for hook_path in "${HOOK_PATHS[@]}"; do
+    if [[ -f "$hook_path" ]]; then
+      ok "Found $hook_path"
+      if [[ -x "$hook_path" ]]; then
+        ok "$hook_path is executable"
+      else
+        warn "$hook_path is not executable"
+        WARN_COUNT=$((WARN_COUNT+1))
+      fi
+    else
+      err "$hook_path missing — run: bash scripts/install-superset-config.sh --force"
+    fi
+  done
+
+  # 4. setup.sh delegates the real Actions health check to the plugin script.
+  if grep -q 'check-actions.sh' ".superset/setup.sh" 2>/dev/null; then
+    ok "setup.sh references scripts/check-actions.sh"
+  else
+    warn "setup.sh does not reference check-actions.sh"
+    WARN_COUNT=$((WARN_COUNT+1))
+  fi
+
+  # 5. check-actions.sh exists
   if [[ -x "$SCRIPT_DIR/check-actions.sh" ]]; then
     ok "scripts/check-actions.sh exists and is executable"
   else
@@ -109,21 +139,23 @@ if (( VERIFY == 1 )); then
     WARN_COUNT=$((WARN_COUNT+1))
   fi
 
-  # 4. Committed?
+  # 6. Committed?
   if (( LOCAL == 0 )); then
-    if git ls-files --error-unmatch "$TARGET" >/dev/null 2>&1; then
-      ok "$TARGET is tracked in git"
-      if ! git diff --quiet HEAD -- "$TARGET" 2>/dev/null; then
-        warn "$TARGET has uncommitted changes"
+    for tracked_path in "$TARGET" "${HOOK_PATHS[@]}"; do
+      if git ls-files --error-unmatch "$tracked_path" >/dev/null 2>&1; then
+        ok "$tracked_path is tracked in git"
+        if ! git diff --quiet HEAD -- "$tracked_path" 2>/dev/null; then
+          warn "$tracked_path has uncommitted changes"
+          WARN_COUNT=$((WARN_COUNT+1))
+        fi
+      else
+        warn "$tracked_path is NOT tracked in git (new workspaces will miss it)"
         WARN_COUNT=$((WARN_COUNT+1))
       fi
-    else
-      warn "$TARGET is NOT tracked in git (your team won't get the config)"
-      WARN_COUNT=$((WARN_COUNT+1))
-    fi
+    done
   fi
 
-  # 5. Superset CLI presence
+  # 7. Superset CLI presence
   if command -v superset >/dev/null 2>&1; then
     ok "Superset CLI is installed: $(command -v superset)"
   else
@@ -213,16 +245,23 @@ echo ""
 # Step 1: commit + push (only for shared config)
 if (( LOCAL == 0 )); then
   echo "  ─── Step 1: commit + push (so teammates get this config) ───"
-  if git ls-files --error-unmatch "$TARGET" >/dev/null 2>&1 && git diff --quiet HEAD -- "$TARGET" 2>/dev/null; then
+  all_shared_clean=1
+  for tracked_path in "$TARGET" "${HOOK_PATHS[@]}"; do
+    if ! git ls-files --error-unmatch "$tracked_path" >/dev/null 2>&1 || \
+       ! git diff --quiet HEAD -- "$tracked_path" 2>/dev/null; then
+      all_shared_clean=0
+    fi
+  done
+  if (( all_shared_clean == 1 )); then
     ok "Already committed and clean."
   else
-    echo "    git add $TARGET"
+    echo "    git add $TARGET ${HOOK_PATHS[*]}"
     echo "    git commit -m 'Add Superset workspace config'"
     echo "    git push"
     echo ""
     reply="$(ask "Run the three commands above now?" "y")"
     if [[ "$reply" =~ ^[Yy] ]]; then
-      git add "$TARGET"
+      git add "$TARGET" "${HOOK_PATHS[@]}"
       if git diff --cached --quiet; then
         warn "Nothing staged (already committed?)"
       else
@@ -260,12 +299,13 @@ fi
 echo ""
 echo "  ─── Step 3: verify activation ───"
 echo ""
-echo "  Right now, manually trigger what the setup hook would do:"
+echo "  Right now, manually trigger the setup hook from the repo root:"
 echo ""
-echo "    bash scripts/check-actions.sh -v"
+echo "    ./.superset/setup.sh"
 echo ""
 echo "  Expected output:"
-echo "    ✓ All checks passed   (or '⚠ N WARN' / '✗ N ERROR')"
+echo "    24hour-ClaudeCode — workspace setup"
+echo "    ✓ ... / ⚠ ... health lines"
 echo ""
 echo "  When you next open / create a workspace in Superset, you should see this"
 echo "  same line in the workspace's terminal pane (preceded by '▸ Verifying...')."

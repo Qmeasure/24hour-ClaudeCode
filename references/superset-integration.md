@@ -40,22 +40,23 @@ Bonus: `<repo-root>/.superset/config.local.json` is **auto-gitignored** for pers
 
 ## 4. Recommended config (the skill's template)
 
-`.superset/config.json` at the repo root (installed by `bash scripts/install-superset-config.sh`):
+`.superset/config.json` plus the three hook scripts at the repo root (installed by `bash scripts/install-superset-config.sh`):
 
 ```json
 {
-  "setup": [
-    "if [ -x \"$SUPERSET_ROOT_PATH/.claude/plugins/24hour-ClaudeCode/scripts/superset-launch.sh\" ]; then bash \"$SUPERSET_ROOT_PATH/.claude/plugins/24hour-ClaudeCode/scripts/superset-launch.sh\"; else echo '⚠ 24hour-ClaudeCode plugin not installed; run /24hour-ClaudeCode:setup in main checkout'; fi"
-  ],
-  "teardown": [
-    "echo '▸ Workspace teardown: $SUPERSET_WORKSPACE_NAME'",
-    "echo 'Reminder: if PR is MERGED, clean up from main: git worktree remove $SUPERSET_WORKSPACE_PATH && git branch -d $SUPERSET_WORKSPACE_NAME'"
-  ],
-  "run": []
+  "setup": ["./.superset/setup.sh"],
+  "teardown": ["./.superset/teardown.sh"],
+  "run": ["./.superset/run.sh"]
 }
 ```
 
-The `setup` hook calls `superset-launch.sh`, which:
+The installed files are:
+
+- `.superset/setup.sh` — verifies plugin/worktree/gh/Actions health, initializes runtime state, and installs detected dependencies.
+- `.superset/run.sh` — starts a detected dev command or prints an explicit customization prompt.
+- `.superset/teardown.sh` — prints safe cleanup guidance before Superset removes the workspace.
+
+The `setup` hook:
 
 1. Checks the skill is installed at `<root>/.claude/plugins/24hour-ClaudeCode`
 2. Health-checks Claude Code Actions
@@ -76,14 +77,14 @@ The `setup` hook calls `superset-launch.sh`, which:
 
 ## 4.5 How to actually activate the integration
 
-Running `bash scripts/install-superset-config.sh` only **creates the file**. By itself, this doesn't make Superset use it. Three steps complete activation:
+Running `bash scripts/install-superset-config.sh` only **creates the config and hook scripts**. By itself, this doesn't make Superset use them. Three steps complete activation:
 
 ### Step 1: commit + push (team-shared mode)
 
 For teammates to inherit the config, it must be in version control. The installer asks "commit + push now?" — pick yes. Otherwise, manually:
 
 ```bash
-git add .superset/config.json
+git add .superset/config.json .superset/setup.sh .superset/run.sh .superset/teardown.sh
 git commit -m "Add Superset workspace config"
 git push
 ```
@@ -113,9 +114,10 @@ bash scripts/install-superset-config.sh --verify
 Expected output:
 
 - ✓ Found `.superset/config.json`
-- ✓ Setup hook references `superset-launch.sh`
+- ✓ Config references `.superset/setup.sh`, `run.sh`, and `teardown.sh`
+- ✓ Found `.superset/setup.sh`, `.superset/run.sh`, and `.superset/teardown.sh`
 - ✓ scripts/check-actions.sh exists and is executable
-- ✓ `.superset/config.json` is tracked in git
+- ✓ `.superset/config.json` and the three hook scripts are tracked in git
 - ✓ Superset CLI is installed: `/usr/local/bin/superset`
 
 Any ✗ exits non-zero.
@@ -152,7 +154,8 @@ Seeing this banner = integration is live.
 ## 5. Team-shared vs personal customization
 
 **Team-shared** (in version control):
-- `.superset/config.json` — default setup/teardown
+- `.superset/config.json` — declares the setup/run/teardown commands
+- `.superset/setup.sh`, `.superset/run.sh`, `.superset/teardown.sh` — default hook implementations
 - `.github/workflows/claude*.yml` — workflow config
 - `templates/` — workflow templates
 
@@ -167,14 +170,14 @@ Seeing this banner = integration is live.
 ```json
 {
   "setup": [
-    "bash .claude/plugins/24hour-ClaudeCode/scripts/superset-launch.sh",
+    "./.superset/setup.sh",
     "cp ~/private.env .env",
     "docker-compose up -d db"
   ]
 }
 ```
 
-Note: when both `.superset/config.json` AND `.superset/config.local.json` exist, Superset uses **only the highest-priority one** found. So if you put a `config.local.json` it must include all the setup commands you want (re-include the launch script).
+Note: when both `.superset/config.json` AND `.superset/config.local.json` exist, Superset uses **only the highest-priority one** found. So if you put a `config.local.json` it must include all the setup commands you want (re-include `./.superset/setup.sh`).
 
 ---
 
@@ -196,7 +199,7 @@ First-time onboarding from a fresh repo:
                     ▼
 ┌────────────────────────────────────────────────────┐
 │ Superset workspace #1 (worktree auto-created)      │
-│ → setup hook runs superset-launch.sh → ✓           │
+│ → setup hook runs .superset/setup.sh → ✓           │
 │ → cheat sheet prints in terminal pane              │
 │ → User edits code in Claude Code                   │
 │ → PostToolUse hook fires → skill auto-engages      │
@@ -223,8 +226,8 @@ When a hook fails:
 # Read the setup output (visible in workspace terminal pane on creation)
 # Look for ✗ ERROR or ⚠ WARN lines
 
-# Manually re-run the launch script (from the worktree):
-bash "$SUPERSET_ROOT_PATH/.claude/plugins/24hour-ClaudeCode/scripts/superset-launch.sh"
+# Manually re-run the setup hook (from the worktree):
+./.superset/setup.sh
 
 # Re-onboard if Actions config drifted:
 cd "$SUPERSET_ROOT_PATH" && bash /24hour-ClaudeCode:setup
@@ -250,7 +253,8 @@ The Superset setup hook is **preparation**, not part of the PR flow:
 
 | Symptom | Diagnosis |
 |---|---|
-| Setup says `✗ scripts/check-actions.sh: No such file` | Skill not installed at `.claude/skills/`, or `.superset/config.json` path is wrong. From repo root: `ls .claude/plugins/24hour-ClaudeCode/scripts/check-actions.sh` |
+| `zsh: no such file or directory: ./.superset/setup.sh` | The repo committed `.superset/config.json` without committing the hook scripts. From the main checkout, rerun `bash scripts/install-superset-config.sh --force`, then commit `.superset/setup.sh`, `.superset/run.sh`, and `.superset/teardown.sh` with the config. |
+| Setup says `scripts/check-actions.sh` is missing | Plugin not installed at `.claude/plugins/24hour-ClaudeCode`, or the setup script points at the wrong plugin path. From repo root: `ls .claude/plugins/24hour-ClaudeCode/scripts/check-actions.sh` |
 | Setup says `gh CLI not authenticated` | Workspace terminal inherits user's `~/.config/gh`, but if Superset runs in a container it may not. Run `gh auth login` in the workspace terminal |
 | Teardown hangs | Some command in the hook is hanging. Use Force Delete |
 | Superset can't find `.superset/config.json` | You're inside a worktree, not repo root — or `~/.superset/projects/<id>/config.json` is overriding it |
