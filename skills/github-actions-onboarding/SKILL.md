@@ -70,20 +70,43 @@ gh api "repos/$REPO/commits/$DEFAULT_BRANCH/check-suites" \
 
 If the result is `0`, send the user to `https://github.com/apps/claude`. This probe can be false-negative until a new commit is pushed after installation, so re-check after the onboarding push if needed.
 
-Check Actions auth secret directly:
+Check Actions auth secret directly. A repo-level secret is sufficient:
 
 ```bash
 gh api "repos/$REPO/actions/secrets/CLAUDE_CODE_OAUTH_TOKEN" --jq '.name'
 ```
 
-If repo secret lookup returns 404, optionally check org secrets when the repo owner is an organization:
+If repo secret lookup returns 404, check whether an organization-level Actions secret is visible to this repo before calling the secret missing:
 
 ```bash
 OWNER="${REPO%%/*}"
-gh secret list --org "$OWNER" --app actions
+IS_PRIVATE="$(gh repo view "$REPO" --json isPrivate --jq '.isPrivate')"
+ORG_SECRET_JSON="$(gh api "orgs/$OWNER/actions/secrets/CLAUDE_CODE_OAUTH_TOKEN" 2>/dev/null || true)"
+ORG_SECRET_VISIBILITY="$(printf '%s' "$ORG_SECRET_JSON" | jq -r '.visibility // empty')"
+
+case "$ORG_SECRET_VISIBILITY" in
+  all)
+    echo "CLAUDE_CODE_OAUTH_TOKEN is configured as an org Actions secret visible to all repos."
+    ;;
+  private)
+    if [ "$IS_PRIVATE" = "true" ]; then
+      echo "CLAUDE_CODE_OAUTH_TOKEN is configured as an org Actions secret visible to private repos, and this repo is private."
+    else
+      echo "CLAUDE_CODE_OAUTH_TOKEN org secret is private-only, but this repo is public."
+    fi
+    ;;
+  selected)
+    gh api "orgs/$OWNER/actions/secrets/CLAUDE_CODE_OAUTH_TOKEN/repositories" --paginate \
+      --jq '.repositories[]?.full_name' | grep -qxF "$REPO" \
+      && echo "CLAUDE_CODE_OAUTH_TOKEN is configured as an org Actions secret selected for this repo."
+    ;;
+  *)
+    echo "No repo secret and no visible org Actions secret found."
+    ;;
+esac
 ```
 
-If missing, tell the user to generate and store the token. Prefer org-level secrets when appropriate:
+Treat the secret as present when either the repo secret exists, or the org secret is visible through one of the `all`, matching `private`, or matching `selected` cases above. If missing, tell the user to generate and store the token. Prefer org-level secrets when appropriate:
 
 ```bash
 claude setup-token
