@@ -1,38 +1,15 @@
 {
+  "description": "24hour-ClaudeCode lifecycle routing. SessionStart injects skill context; Stop is a prompt-based router that points Claude back to the review-loop skill.",
   "hooks": {
     "SessionStart": [
       {
-        "matcher": "startup|clear|compact",
+        "matcher": "startup|resume|clear|compact",
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/bootstrap.sh\"",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/bootstrap.sh",
+            "args": [],
             "timeout": 10,
-            "async": false
-          }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "Edit|Write|MultiEdit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/post-tool-use.sh\"",
-            "timeout": 5,
-            "async": false
-          }
-        ]
-      }
-    ],
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/goal-submit.sh\"",
-            "timeout": 5,
             "async": false
           }
         ]
@@ -42,11 +19,12 @@
       {
         "hooks": [
           {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/stop.sh\"",
+            "type": "prompt",
+            "prompt": "Use the `review-loop` skill via the Skill tool.\n\nExecute the complete 24hour-ClaudeCode PR review loop in the current Claude Code session and current WorkTree.\n\nPreflight git, worktree, GitHub auth, and runtime config. Prove reviewable changes exist. Inspect the diff and scan for secrets. Run configured checks. Commit. Push. Bind CURRENT_HEAD_SHA. Create or refresh the PR. Wait for the current-SHA GitHub Claude Code Action review workflow. Read top-level and inline review output. Fix blocking security and correctness findings. Repeat until convergence. Merge or enable auto-merge. Write REVIEW_LOOP_DONE or REVIEW_LOOP_STOPPED.",
+            "model": "claude-opus-4-7",
             "timeout": 7200,
-            "statusMessage": "Waiting for GitHub Claude Code Action review...",
-            "async": false
+            "continueOnBlock": true,
+            "statusMessage": "Evaluating 24hour-ClaudeCode review-loop Stop hook"
           }
         ]
       }

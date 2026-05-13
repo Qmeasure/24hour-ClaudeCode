@@ -1,17 +1,12 @@
 name: Claude Code Review
 
 # Self-review workflow for the 24hour-ClaudeCode PLUGIN repo.
-# This is meta — the plugin reviewing its own changes. Review dimensions are
-# **plugin-architecture-specific**, not generic. When extending the plugin,
-# also update templates/claude-code-review.yml + scripts/render-workflows.sh
-# (which produce the workflow that ships to USER projects when they install
-# this plugin — that one is generic project-review).
+# This is meta: the plugin reviewing its own source changes. Review dimensions
+# are plugin-architecture-specific, not generic code style.
 
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-    paths-ignore:
-      - "**.lock"
 
 concurrency:
   group: claude-review-${{ github.event.pull_request.number }}
@@ -42,144 +37,48 @@ jobs:
           # Review must check plugin-architecture invariants, not generic code style.
           prompt: |
             You are a senior Claude Code Plugin maintainer reviewing this PR.
-            The repository is the `24hour-ClaudeCode` Plugin — a published Claude Code plugin
-            that turns any git worktree into an autonomous PR loop (write code, preferably
-            through `/goal` → SessionStart bootstraps → UserPromptSubmit arms the Goal guard
-            → PostToolUse marks dirty → Stop hook waits for Goal readiness, commits/pushes/
-            opens PR, waits for current-SHA CI + Claude Code Action verdict, then either
-            auto-merges or returns `decision:block` to feed rework feedback back to the
-            agent). Architecture details: `FLOW.md`.
+            The repository is `24hour-ClaudeCode`, a published Claude Code plugin.
+            Current architecture is skill-first:
 
-            Your review is **not** generic code review. Evaluate against these
-            Plugin-Maintainer dimensions:
+            - `hooks/hooks.json` has a `SessionStart` command hook that runs
+              `hooks/bootstrap.sh`.
+            - `hooks/hooks.json` has a `Stop` prompt hook that only routes the
+              current worktree session to the `review-loop` skill.
+            - `skills/review-loop/SKILL.md` owns commit, push, PR creation,
+              current-SHA review ingestion, rework, and merge.
+            - `skills/github-actions-onboarding/SKILL.md` owns setup.
+            - Scripts are limited to version sync and deterministic Superset
+              file installation.
 
-            1. **Plugin manifest correctness** — `.claude-plugin/plugin.json` and
-               `.claude-plugin/marketplace.json` must reference the same plugin name
-               (`24hour-ClaudeCode`). Version bumps must use `scripts/bump-version.sh`
-               so both files stay in sync. Flag any drift as **major**.
+            Review against these current invariants:
 
-            2. **Hook architecture coherence** — four hooks have STRICT separation of duties:
-               - `SessionStart` (`hooks/bootstrap.sh`): env detection + content injection
-               - `UserPromptSubmit` (`hooks/goal-submit.sh`): `/goal` shipping guard only
-               - `PostToolUse` (`hooks/post-tool-use.sh`): light marker only (touches `<runtime>/dirty`)
-               - `Stop` (`hooks/stop.sh`): the heavy worker (mode-aware orchestrator)
-
-               Flag as **blocker** any change that:
-               - Moves heavy logic from Stop to PostToolUse (wrong granularity, wastes turns)
-               - Lets Goal mode intermediate turns commit/push/open PR before the ready-to-ship marker
-               - Adds git operations to bootstrap or post-tool-use
-               - Changes the matcher from `startup|clear|compact` for SessionStart (would lose `/clear`/auto-compact resilience)
-
-            3. **State machine integrity** — `state.json.mode` ∈
-               {`idle` | `waiting_for_preflight_merge` | `waiting_for_review` | `ready_for_rework` | `merged` | `stopped`}.
-               Transitions in `hooks/stop.sh` must be consistent:
-               - idle/ready_for_rework + diff + no active Goal guard → waiting_for_review (push)
-               - idle/ready_for_rework + diff + active Goal guard without marker → no commit/push/PR
-               - waiting_for_review + pass → merged (auto-merge)
-               - waiting_for_review + rework_required → ready_for_rework (decision:block)
-               - waiting_for_review + missing/stale/inconclusive/infra → stopped (systemMessage)
-               - merged → idle (cleanup pass)
-
-               Flag any new mode that isn't documented in FLOW.md, or any case branch that
-               leaks into a wrong mode.
-
-            4. **decision:block contract** — the rework loop depends on `stop.sh` returning
-               `{"decision":"block","reason":"..."}` JSON to stdout (NOT exit code 2). Any
-               change to the emit_block helper or its callers must preserve this contract.
-               Reference: official Claude Code hooks spec.
-
-            5. **Cross-script consistency** — tokens used between scripts must agree:
-               - `decide-current-sha-feedback.sh` returns: `pass | rework_required | stop`
-               - `stop.sh` case-matches all three explicitly. Flag missing cases.
-               - `check-stop-conditions.sh` returns: `continue | stop:max_iterations | stop:protected_branch | stop:gh_auth_lost | stop:repeated_failure`
-               - `stop.sh` handles all `stop:*` tokens. Flag drift.
-
-            6. **Anti-pattern explicitness** — when behavior changes, the failure mode must
-               be documented in `references/anti-patterns.md` (categories A–H). Each
-               anti-pattern traces to a real failure scenario. Flag soft-touch additions
-               that don't cite the failure mode they prevent.
-
-            7. **Verbatim safety markers** — sections labeled `verbatim` / `iron law` /
-               `Iron Law` / `<EXTREMELY-IMPORTANT>` MUST NOT be casually rewritten:
-               - `references/monitor-template.md`'s 6 ironclad rules
-               - `skills/using-24hour-ClaudeCode/SKILL.md` Iron Law
-               - Bootstrap hook's `<EXTREMELY-IMPORTANT>` framing
-               Flag any soft-touch edit to these as **blocker**.
-
-            8. **Sub-skill orthogonality** — 8 skills under `skills/`, each owns ONE concern:
-               using-24hour-ClaudeCode (bootstrap meta), github-actions-onboarding,
-               ci-feedback-analysis, review-feedback-analysis, rework-implementation,
-               verification-before-push, babysit-pr (manual ref only), failure-escalation.
-               Flag content overlap or skill-name drift.
-
-            9. **Reference orthogonality** — each `references/<topic>.md` covers one concern:
-               monitor-template / quality-gate / decision-table / anti-patterns / blockers /
-               workflow-yaml / superset-integration / official-docs-cheatsheet. Flag overlap.
-
-            10. **Defensive state management** — atomic writes (`tmp + mv`), cooperative
-                locks (mkdir + holder file), runtime files in auto-gitignored
-                `<runtime>/` (never leaks to git diff). Verify any new state file follows
-                this. Specifically: `runtime-state.sh`, `runtime-lock.sh` are the ONLY
-                entry points for state mutations — flag direct file writes elsewhere.
-
-            11. **Stale-lock detection** — `runtime-lock.sh acquire` must clear orphaned
-                locks (PID dead AND >30 min old) before mkdir. Removing this would deadlock
-                the runtime after any SIGKILL. Flag as **blocker**.
-
-            12. **Onboarding flow correctness** — `scripts/configure-actions.sh` orders:
-                gh auth → repo identify → App install + verify (poll 6×60s) → provider
-                choice (claude/codex/both) → conditional Claude OAuth → render YAMLs →
-                push → conditional OPENAI_API_KEY (Codex) → health check → optional
-                Superset. Reordering skips can break Codex-only flow. Flag drift.
-
-            13. **Bilingual triggers** — `.claude-plugin/plugin.json` `description` field
-                AND `skills/using-24hour-ClaudeCode/SKILL.md` `description` accumulate
-                Chinese + English trigger keywords. Removing or auto-translating them
-                breaks user discovery. Flag deletion of existing keywords as **major**.
-
-            14. **DoD measurability** — success state is PR `state=MERGED`, or GitHub
-                auto-merge is armed after current HEAD SHA CI success + verdict pass.
-                Not merely "CI green". Flag any softening of the DoD anywhere
-                (`SKILL.md` / `README.md` / sub-skills / FLOW.md).
-
-            15. **Internal link integrity** — `[text](path/to/file.md)` and `[text](#anchor)`
-                in `SKILL.md` / `README.md` / `FLOW.md` / `CLAUDE.md` / sub-skills /
-                references must resolve. Catch path drift after file moves.
-
-            16. **Workflow YAML drift** — when `templates/claude-code-review.yml` changes
-                (the version SHIPPED to user projects), confirm `.github/workflows/claude-code-review.yml`
-                (this repo's self-review) still uses the **plugin-maintainer** dimensions
-                above, NOT the generic project-review dimensions. They diverge by design.
-
-            17. **Tone alignment** — the plugin's deliberate voice in user-facing docs is
-                "approachable, plain-language, beginner-friendly with FAQ + scenarios"
-                (README, FLOW, top-level docs). Internal docs (CLAUDE.md, references,
-                sub-skills) are "anti-pattern-explicit, real-failure-driven, imperative".
-                Don't blur the two. Don't auto-neutralize Chinese-friendly phrasings.
-
-            18. **Workflow-file change discipline** — when a PR modifies
-                `.github/workflows/*.yml`, those changes are subject to GitHub's
-                workflow-validation 401 (the App refuses to auth on PR branches whose
-                workflow files differ from default). The plugin handles this with the
-                auto-split flow:
-                - `scripts/split-workflow-pr.sh` peels workflow changes off into a
-                  preflight PR with `gh pr merge --auto --squash` enabled
-                - `hooks/stop.sh` Case A 1a–1c dispatches into it
-                - `hooks/stop.sh` Case E (`mode=waiting_for_preflight_merge`)
-                  polls + rebases on merge
-                - Override knob: `repair.allow_workflow_in_pr` (default false)
-                - State machine includes `waiting_for_preflight_merge`, `waiting_for_review`, and `stopped`
-
-                Flag as **blocker**:
-                - Any change that bundles workflow + code in a non-preflight PR
-                  without setting `allow_workflow_in_pr=true` AND documenting why
-                - Any change to `split-workflow-pr.sh` that drops the
-                  committed-workflow-history refusal (out-of-scope for v1)
-                - Any change to `stop.sh` that removes the workflow-bucket check
-                  before the danger_paths check (ordering matters — preflight first)
-                - Removing the branch-protection caveat from
-                  `using-24hour-ClaudeCode/SKILL.md` or `CLAUDE.md`
-                  (no-required-check-on-claude-review constraint)
+            1. Plugin layout follows Claude Code plugin docs: `.claude-plugin/`
+               contains only plugin metadata; `skills/`, `commands/`, `hooks/`,
+               `scripts/`, and `templates/` are at plugin root.
+            2. Hooks stay thin. Flag any commit, push, PR, review parsing, or
+               merge orchestration added to a hook or hook script.
+            3. Long workflows are skill-owned. `review-loop` and
+               `github-actions-onboarding` must carry sequencing, judgment,
+               stop conditions, and user-facing workflow rules.
+            4. Worktree scope is enforced. Review-loop must not run from the
+               main checkout or protected branches.
+            5. Review evidence must come from real GitHub PR/check/comment
+               surfaces and be bound to the current HEAD SHA. Missing, stale,
+               or ambiguous evidence must stop, never pass.
+            6. Rework stays in the same Claude Code session and same WorkTree.
+               Do not spawn another Claude CLI or ask GitHub Action to repair.
+            7. Onboarding is generic. It must not assume a language, package
+               manager, test command, branch name, org, or hosting layout.
+            8. Beginner docs (`README*.md`) must describe the current 3-step
+               flow: install plugin, run setup in the main checkout/default
+               branch, then start a fresh Claude session inside a feature
+               worktree and use `/goal`.
+            9. Shipped workflow templates must be generic and must not skip
+               docs-only PRs unless that skip is explicitly justified.
+            10. Do not reintroduce deleted legacy paths such as `hooks/stop.sh`,
+                `hooks/goal-submit.sh`, `hooks/post-tool-use.sh`,
+                `scripts/render-workflows.sh`, `scripts/runtime-state.sh`,
+                `scripts/runtime-lock.sh`, or split phase skills.
 
             Format your output:
             - **Blocking issues** (must fix before merge): ≤ 3 items, file:line + reason + fix
@@ -187,51 +86,10 @@ jobs:
             - **Minor / Nit**: skip unless cross-doc inconsistency or broken link
             - **What this PR does well**: 1–2 sentences, optional
 
-            If the PR has no issues across all 18 dimensions, post a single approval review:
-            "Looks good — checked all 18 plugin-maintainer dimensions, no blocking issues."
+            If the PR has no issues across these dimensions, post a single approval review:
+            "Looks good — checked the current skill-first plugin architecture, no blocking issues."
             Do not invent issues to look thorough.
-
-            Machine-readable verdict contract:
-            - Produce a verdict for exactly PR head SHA ${{ github.event.pull_request.head.sha }}.
-            - Write it to review-verdict-${{ github.event.pull_request.head.sha }}.json if file writes are available.
-            - Include the same JSON in the sticky PR comment hidden block:
-              <!-- claude-review-verdict
-              { ... }
-              -->
-            - Schema:
-              {
-                "schema_version": 1,
-                "pr_number": ${{ github.event.pull_request.number }},
-                "head_sha": "${{ github.event.pull_request.head.sha }}",
-                "reviewer": "claude-code-action",
-                "review_run_id": "${{ github.run_id }}",
-                "verdict": "pass | fail | needs_human | inconclusive",
-                "summary": "string",
-                "blocking_findings": [
-                  {
-                    "id": "stable-id",
-                    "severity": "critical | major | minor",
-                    "category": "correctness | security | test | maintainability | performance | compatibility",
-                    "path": "src/file.ts",
-                    "line": 42,
-                    "title": "string",
-                    "message": "string",
-                    "evidence": "string",
-                    "suggested_fix": "string"
-                  }
-                ],
-                "non_blocking_findings": [],
-                "confidence": "high | medium | low"
-              }
-            - Validation: verdict=pass requires blocking_findings=[]; verdict=fail requires at least one blocking finding; needs_human/inconclusive must not request automatic rework.
           claude_args: |
             --max-turns 6
             --model claude-sonnet-4-6
           use_sticky_comment: true
-
-      - name: Upload review verdict
-        if: ${{ hashFiles(format('review-verdict-{0}.json', github.event.pull_request.head.sha)) != '' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: review-verdict-${{ github.event.pull_request.head.sha }}
-          path: review-verdict-${{ github.event.pull_request.head.sha }}.json

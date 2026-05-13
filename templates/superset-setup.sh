@@ -7,14 +7,13 @@
 # Responsibilities:
 #   - Verify worktree + plugin presence
 #   - Verify gh CLI auth + workflow scope
-#   - Verify GitHub secrets
 #   - Verify Claude Code Actions workflow YML(s) present
 #   - Initialize .claude/runtime/24hour-ClaudeCode/
 #   - Install project dependencies (project-specific; see "Dependencies" section)
 #
-# FORBIDDEN here (do these in stop.sh / babysit-pr skill instead):
+# FORBIDDEN here (do these in review-loop skill instead):
 #   - commit / push / create PR
-#   - wait for CI
+#   - wait for review
 #   - read review feedback
 #   - auto-merge
 
@@ -67,21 +66,17 @@ else
 fi
 
 # ---- 4. Claude Code Actions config ----
-if [[ -x "$PLUGIN_DIR/scripts/check-actions.sh" ]]; then
-  if bash "$PLUGIN_DIR/scripts/check-actions.sh" >/dev/null 2>&1; then
-    ok "Claude Code Actions configured"
-  else
-    warn "Claude Code Actions config has issues. From main checkout: /24hour-ClaudeCode:setup"
-  fi
+if compgen -G "$ROOT/.github/workflows/claude*.yml" >/dev/null 2>&1 || \
+   compgen -G "$ROOT/.github/workflows/codex*.yml" >/dev/null 2>&1; then
+  ok "Claude/Codex review workflow file present"
 else
-  info "check-actions.sh not found (plugin install may be incomplete)"
+  warn "Claude/Codex review workflow missing. From main checkout: /24hour-ClaudeCode:setup"
 fi
 
 # ---- 5. Initialize runtime ----
-if [[ -x "$PLUGIN_DIR/scripts/runtime-state.sh" ]]; then
-  bash "$PLUGIN_DIR/scripts/runtime-state.sh" init >/dev/null 2>&1 || true
-  ok "Runtime state initialized at .claude/runtime/24hour-ClaudeCode/"
-fi
+mkdir -p "$WS_PATH/.claude/runtime/24hour-ClaudeCode" 2>/dev/null || true
+printf '*\n!.gitignore\n' > "$WS_PATH/.claude/runtime/24hour-ClaudeCode/.gitignore" 2>/dev/null || true
+ok "Runtime directory initialized at .claude/runtime/24hour-ClaudeCode/"
 
 # ---- 6. Install project dependencies (PROJECT-SPECIFIC — EDIT THIS BLOCK) ----
 echo ""
@@ -115,13 +110,12 @@ echo "─── Workspace ready. Quick reference ───"
 cat <<EOF
 
 $(bold 'Start coding:')
-  Open Claude Code in this workspace. The Stop hook auto-engages on the first
-  edit. Or trigger the skill explicitly with phrases like "open a PR".
+  Open Claude Code in this workspace. The Stop prompt routes completed work to
+  review-loop. Or trigger the skill explicitly with phrases like "open a PR".
 
 $(bold 'Maintenance commands:')
-  bash $PLUGIN_DIR/scripts/check-actions.sh -v
   /24hour-ClaudeCode:status
-  /24hour-ClaudeCode:retry        # force re-run the Stop pipeline once
+  /24hour-ClaudeCode:retry        # clear stopped review-loop state
 
 $(bold 'When done — clean up worktree (run from MAIN checkout):')
   cd $ROOT
@@ -129,7 +123,7 @@ $(bold 'When done — clean up worktree (run from MAIN checkout):')
   git branch -d $WS_NAME
 
 $(bold 'Help:')
-  $PLUGIN_DIR/SKILL.md      — runtime contract
+  $PLUGIN_DIR/skills/using-24hour-ClaudeCode/SKILL.md — runtime contract
   $PLUGIN_DIR/README.md     — overview
 EOF
 echo ""

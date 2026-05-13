@@ -1,653 +1,160 @@
-**English** | [中文](FLOW.zh-CN.md)
+# 24hour-ClaudeCode Flow
 
-# 24hour-ClaudeCode — Complete Runtime Flow
+This is the architecture source of truth for the skill-first review loop.
 
-This document is the single source of truth for the plugin's runtime behavior. It enumerates **every hook**, the **trigger condition** for each, and the **complete event loop** from project install to PR merge.
-
----
-
-## Hooks at a glance
-
-| Hook | Trigger | Script | Timeout | Role |
-|---|---|---|---|---|
-| `SessionStart` | Session start, `/clear`, auto-compact (matcher: `startup\|clear\|compact`) | `hooks/bootstrap.sh` | 10s | Detect environment; inject runtime contract or onboarding instructions |
-| `UserPromptSubmit` | User prompt submission; detects `/goal` | `hooks/goal-submit.sh` | 5s | Arm Goal-mode shipping guard and inject ready-to-ship marker contract |
-| `PostToolUse` | After every `Edit` / `Write` / `MultiEdit` tool call (matcher: `Edit\|Write\|MultiEdit`) | `hooks/post-tool-use.sh` | 5s | Light marker — touches `<runtime>/dirty`. Does no real work. |
-| `Stop` | Turn boundary — when the main agent finishes a response | `hooks/stop.sh` | 7200s | Heavy worker — owns the entire commit/push/PR/current-SHA review loop |
-
-**Why this split:** `PostToolUse` fires after every tool call (too granular for "commit when work is done"). `Stop` fires once per turn — exactly when "Claude has finished a coherent set of edits" should produce a commit. The marker pattern lets `Stop` skip work fast on chat-only turns.
-
-Hook output formats (per the Claude Code spec):
-
-```jsonc
-// Informational — Claude is allowed to stop
-{"systemMessage": "<text>"}
-
-// Block stop — feeds `reason` back to Claude as next-turn context
-{"decision": "block", "reason": "<text>"}
-```
-
----
-
-## Phase 0 — Install & Onboard
-
-Triggered by the user manually, not by a hook.
-
-```
-┌─ User runs in any project ──────────────────────────────────────────┐
-│  /plugin marketplace add Qmeasure/24hour-ClaudeCode                 │
-│  /plugin install 24hour-ClaudeCode@24hour-ClaudeCode                 │
-└─────────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-              Plugin is installed in Claude Code's plugin cache for this machine
-                              │
-                              ▼
-┌─ User runs ─────────────────────────────────────────────────────────┐
-│  /24hour-ClaudeCode:setup                                           │
-└─────────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-   Per repo, `/24hour-ClaudeCode:setup` runs scripts/configure-actions.sh:
-     1. Verify gh / claude / git installed + authenticated (workflow scope)
-     2. Auto-detect Claude App on this repo via `scripts/check-claude-app.sh`
-        (check_suites side-channel: `gh api repos/.../commits/.../check-suites`
-        returns 200 for user-PAT and lists every App with checks:write installed
-        on the repo. App.slug == "claude" && App.owner == "anthropics" → installed.)
-        If not detected, open https://github.com/apps/claude in the browser,
-        wait for user, re-detect.
-     3. Detect `CLAUDE_CODE_OAUTH_TOKEN` secret via
-        `scripts/check-secret.sh` (precise probe:
-        `gh api repos/.../actions/secrets/<NAME>` returns 200 if set, 404 if not).
-        If missing, print the 2 CLI commands (claude setup-token + gh secret set)
-        in a boxed block for the user to run in their terminal; wait for Enter;
-        re-verify. The script does NOT invoke these interactive commands itself.
-     4. Run scripts/detect-project.sh:
-          • project type (node/python/go/rust/...)
-          • base branch
-          • test/lint/typecheck/build commands
-          • monorepo flag, repo size
-          • style guides (CLAUDE.md, AGENTS.md, ...)
-          • danger paths (migrations/, infra/, .env.production, ...)
-     5. Ask provider: claude | codex | both
-        • If codex/both: ensure OPENAI_API_KEY secret
-     6. Detect existing CI workflow in .github/workflows/
-        • If no CI: ask whether to generate ci.yml
-     7. scripts/render-workflows.sh --provider <choice> [--include-ci]:
-          • Render 1–3 workflow YMLs (claude-code-review.yml, claude.yml,
-            codex-review.yml, ci.yml — combination depends on choices)
-          • (Review prompt is INLINE in claude-code-review.yml / codex-review.yml, baked in from detect-project scan: REPO_DESCRIPTION, TOP_DIRS, ENTRY_FILES, DANGER_PATHS)
-     8. git add → commit → push (with user confirmation per push)
-     9. Seed .claude/24hour-ClaudeCode.config.json from template
-    10. scripts/runtime-state.sh init → state.json with mode="idle"
-    11. scripts/check-actions.sh -v (final health check)
-                              │
-                              ▼
-              ✅ Repo is ready. The auto-loop is live.
-```
-
-Onboarding is idempotent — re-running `/24hour-ClaudeCode:setup` is safe.
-
----
-
-## Phase 1 — Session opens
-
-**Trigger:** every Claude Code session start, every `/clear`, every auto-compact.
-**Hook:** `SessionStart` with matcher `startup|clear|compact`.
-
-```
-┌─ SessionStart hook fires → bootstrap.sh ────────────────────────────┐
-│                                                                     │
-│  Resolve effective config path via scripts/resolve-config-path.sh:  │
-│  ├─ <worktree>/.claude/24hour-ClaudeCode.config.json exists? use it │
-│  └─ Else if in worktree → fall back to main checkout's config      │
-│     (found via `git worktree list --porcelain`). This is how a      │
-│     fresh worktree inherits main's onboarded config without redo.   │
-│                                                                     │
-│  Read the resolved config:                                          │
-│  ├─ enabled=false → emit "disabled" note, exit 0                    │
-│  └─ enabled=true → continue                                         │
-│                                                                     │
-│  Detect environment:                                                │
-│  ├─ in worktree? (git rev-parse --git-dir vs --git-common-dir)      │
-│  ├─ on protected branch? (main / master / develop / staging / ...) │
-│  ├─ gh authenticated?                                               │
-│  ├─ Claude Code Actions deployed? (.github/workflows/claude*.yml)   │
-│  └─ config present? (via resolved path above — TRUE if main has it) │
-│                                                                     │
-│  Branch on detection (ORDER MATTERS — onboarding before dormant):   │
-│  ├─ Onboarding incomplete → inject github-actions-onboarding skill  │
-│  │     with context-aware location hint:                            │
-│  │       • on main: "run /24hour-ClaudeCode:setup here"             │
-│  │       • in worktree: "switch to main checkout to setup"          │
-│  │     wrapped in <EXTREMELY-IMPORTANT>                             │
-│  ├─ Not in worktree → emit "dormant" note (one line), exit 0        │
-│  ├─ Protected branch → emit "dormant" note (one line), exit 0       │
-│  └─ Healthy (in worktree + onboarded) → inject                      │
-│     using-24hour-ClaudeCode/SKILL.md (the runtime contract)         │
-│     wrapped in <EXTREMELY-IMPORTANT>                                │
-│                                                                     │
-│  Initialize <runtime>/state.json with mode="idle" if absent.        │
-│  Write <runtime>/.gitignore with `*` so runtime files never leak.   │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-                Output JSON via stdout:
-                {"hookSpecificOutput": {
-                  "hookEventName": "SessionStart",
-                  "additionalContext": "<runtime contract>"
-                }}
-                              │
-                              ▼
-              Claude reads the runtime contract and is ready.
-```
-
----
-
-## Phase 2 — Claude edits code
-
-**Trigger:** Claude calls `Edit`, `Write`, or `MultiEdit`.
-**Hook:** `PostToolUse` with matcher `Edit|Write|MultiEdit`.
-
-```
-┌─ PostToolUse hook fires after each Edit/Write/MultiEdit ────────────┐
-│                                                                     │
-│  post-tool-use.sh (5 lines):                                        │
-│    mkdir -p <runtime>                                               │
-│    touch <runtime>/dirty                                            │
-│    exit 0                                                           │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
-```
-
-That's the entire role of `PostToolUse`. No JSON output. No commits. The dirty flag is a fast hint for the upcoming `Stop` hook ("a tool call modified files this turn"). `git diff` remains the source of truth.
-
----
-
-## Phase 3 — Turn ends, the loop runs
-
-**Trigger:** Claude finishes the response (turn boundary).
-**Hook:** `Stop` (no matcher; fires every turn end).
-
-This is the workhorse. It is **mode-aware** — `state.json.mode` ∈ {`idle`, `waiting_for_preflight_merge`, `waiting_for_review`, `ready_for_rework`, `merged`, `stopped`}. Legacy `waiting_for_checks` state is accepted and routed through `waiting_for_review`.
-
-If a user started work with `/goal ...`, `hooks/goal-submit.sh` writes `<runtime>/goal-guard.json` and injects the ready-to-ship marker contract through `UserPromptSubmit`. Stop will not ship while that guard exists unless Claude's latest message ends with this exact final non-empty line outside any code block:
+## Summary
 
 ```text
-<24hour-ClaudeCode-goal-complete ready-to-ship="true" />
+SessionStart hook = inject the right skill context
+Stop prompt hook = route the current session back to review-loop
+review-loop skill = complete PR/review/fix/merge workflow
+github-actions-onboarding skill = complete repo onboarding workflow
+current Claude Code session = fixer
+GitHub Claude Code Action = reviewer
+scripts = deterministic mechanical helpers only
 ```
 
-This avoids the unsafe case where `/goal` is still running across turns but the plugin submits a PR after an intermediate diff. The Stop hook also reads Claude Code's native `goal_status` transcript attachments as a fallback, but same-turn shipping relies on the marker because the native `/goal` evaluator runs after project Stop hooks on current Claude Code builds.
+The Stop hook is not a workflow engine. It is a prompt-based router: if Claude appears ready to stop after implementation, it blocks stopping with a short instruction to use `review-loop`.
 
-```
-┌─ Stop hook fires → stop.sh ─────────────────────────────────────────┐
-│                                                                     │
-│  Pre-checks:                                                        │
-│  ├─ enabled=false  → exit 0 silently                                │
-│  ├─ not in worktree → exit 0 silently                               │
-│  └─ Acquire <runtime>/lock                                          │
-│       └─ if held by prior Stop in flight → exit 0 silently          │
-│                                                                     │
-│  Read mode from <runtime>/state.json (default: idle)                │
-│  Read dirty flag and git diff state                                 │
-│                                                                     │
-│  ┌─ DISPATCH BY MODE ──────────────────────────────────────────────┐│
-│  │                                                                ││
-│  │  CASE A — mode ∈ {idle, ready_for_rework} AND diff non-empty   ││
-│  │           [PRE-PR BRANCH]                                       ││
-│  │  ─────────────────────────────────────────────────────────────  ││
-│  │  1. detect-changes.sh — classify files (code / lock / docs /   ││
-│  │       secrets / workflow / danger)                              ││
-│  │     └─ if goal guard is active and latest assistant message     ││
-│  │        lacks the ready-to-ship marker → emit systemMessage and ││
-│  │        do NOT commit/push/PR.                                  ││
-│  │     └─ buckets.workflow non-empty AND                           ││
-│  │        repair.allow_workflow_in_pr ≠ true →                     ││
-│  │           1a. Refuse if .github/workflows/* in committed       ││
-│  │               history (return decision:block with manual       ││
-│  │               git-reset instructions; see stop:committed_      ││
-│  │               workflow_changes in failure-escalation).          ││
-│  │           1b. Otherwise call split-workflow-pr.sh:             ││
-│  │                 • Save workflow file content                    ││
-│  │                 • Revert workflow files on the user's branch   ││
-│  │                 • Create preflight/<branch>-workflow-<ts>      ││
-│  │                   from origin/<base>                            ││
-│  │                 • Apply ONLY workflow changes; commit + push   ││
-│  │                 • gh pr create + gh pr merge --auto --squash   ││
-│  │                 • Switch back to user's branch                 ││
-│  │           1c. state.mode = waiting_for_preflight_merge          ││
-│  │               state.preflight_pr = N                            ││
-│  │               Emit "📦 Auto-split into preflight PR #N", exit. ││
-│  │     └─ if any path matches danger_paths → return decision:block││
-│  │        with reason "edit touches sensitive path; need approval" ││
-│  │  2. check-stop-conditions.sh — verify max_iterations, branch   ││
-│  │     protection, gh auth, diff size                              ││
-│  │     └─ if stop:* token returned → emit info + invoke           ││
-│  │        failure-escalation, exit 0                               ││
-│  │  3. Run config.checks.commands (lint/typecheck/test) fail-fast ││
-│  │     └─ on any failure → return decision:block with reason     ││
-│  │        "local check failed: <last 50 lines>"                   ││
-│  │  4. auto-commit.sh — stage non-danger files,                    ││
-│  │       commit "auto: WIP on <branch> [HH:MM:SS]" (placeholder) ││
-│  │  5. git push -u origin <branch>                                ││
-│  │  6. ensure-pr.sh — gh pr view || gh pr create --fill           ││
-│  │  7. Iteration accounting:                                       ││
-│  │     • mode was ready_for_rework → iteration += 1               ││
-│  │     • mode was idle → iteration = 1 (first push for this PR)   ││
-│  │  8. State transitions:                                          ││
-│  │     • mode = waiting_for_review                                 ││
-│  │     • pr_number = N                                             ││
-│  │     • current_head_sha = git rev-parse HEAD                    ││
-│  │     • Clear <runtime>/dirty                                     ││
-│  │  9. Mark PR ready, then immediately enter Case B on this same  ││
-│  │     Stop hook invocation. Claude is not allowed to stop until  ││
-│  │     Case B reaches pass, block-worthy feedback, or safe stop.  ││
-│  │                                                                ││
-│  ├────────────────────────────────────────────────────────────────┤│
-│  │                                                                ││
-│  │  CASE B — mode = waiting_for_review                            ││
-│  │           [POST-PR BRANCH — CURRENT-SHA REVIEW GATE]            ││
-│  │  ─────────────────────────────────────────────────────────────  ││
-│  │  1. HEAD_SHA = git rev-parse HEAD                              ││
-│  │  2. gh pr ready N (noop if already ready)                      ││
-│  │  3. wait-for-current-sha-status.sh --pr N --sha HEAD_SHA       ││
-│  │     waits synchronously for current-SHA CI + Claude Code       ││
-│  │     Review workflow. Timeout/missing/inconclusive is a safe    ││
-│  │     stop, not a retry-on-next-stop.                             ││
-│  │  4. fetch-review-verdict.sh --pr N --sha HEAD_SHA --run-id R   ││
-│  │     reads review-verdict-<sha> artifact first, hidden JSON     ││
-│  │     comment block second. Any SHA mismatch is stale.           ││
-│  │  5. decide-current-sha-feedback.sh — apply the matrix:         ││
-│  │                                                                ││
-│  │     ── pass ──                                                  ││
-│  │     gh pr merge --auto --squash                                ││
-│  │     mode = "merged"                                             ││
-│  │     emit systemMessage success/auto-merge-enabled, exit 0      ││
-│  │                                                                ││
-│  │     ── rework_required ──                                       ││
-│  │     mode = "ready_for_rework"                                   ││
-│  │     return JSON:                                                ││
-│  │       {"decision":"block",                                      ││
-│  │        "reason":"Current HEAD SHA feedback...\n                 ││
-│  │                  Fix only these findings in this WorkTree."}    ││
-│  │     ⚠ This blocks Claude from stopping. Claude reads `reason`   ││
-│  │       as next-turn context and continues editing.               ││
-│  │                                                                ││
-│  │     ── stop ──                                                  ││
-│  │     Missing/stale verdict, infra failure, needs_human,         ││
-│  │     inconclusive, timeout, repeated feedback, or max rounds.   ││
-│  │     mode = "stopped"; emit systemMessage; do not block.        ││
-│  │     exit 0                                                      ││
-│  │                                                                ││
-│  ├────────────────────────────────────────────────────────────────┤│
-│  │                                                                ││
-│  │  CASE C — mode = idle, diff empty                              ││
-│  │           [CHAT-ONLY TURN]                                      ││
-│  │  ─────────────────────────────────────────────────────────────  ││
-│  │  Nothing to do. Release lock. exit 0.                           ││
-│  │                                                                ││
-│  ├────────────────────────────────────────────────────────────────┤│
-│  │                                                                ││
-│  │  CASE D — mode = merged                                         ││
-│  │           [POST-MERGE CLEANUP]                                  ││
-│  │  ─────────────────────────────────────────────────────────────  ││
-│  │  Delete <runtime>/current-pr.json, feedback.json, dirty         ││
-│  │  Reset state.json: mode="idle", iteration=0, pr_number=null     ││
-│  │  exit 0                                                         ││
-│  │                                                                ││
-│  ├────────────────────────────────────────────────────────────────┤│
-│  │                                                                ││
-│  │  CASE E — mode = waiting_for_preflight_merge                    ││
-│  │           [WORKFLOW-FILE PREFLIGHT IN FLIGHT]                   ││
-│  │  ─────────────────────────────────────────────────────────────  ││
-│  │  gh pr view <preflight_pr> --json state                        ││
-│  │     └─ MERGED → git fetch + git rebase origin/<base>;          ││
-│  │       state.mode = idle, state.preflight_pr = null;            ││
-│  │       FALL THROUGH to Case A (commits remaining diff).         ││
-│  │       Rebase conflict → emit info "resolve manually", exit.    ││
-│  │     └─ OPEN → emit info "still waiting", exit 0.               ││
-│  │     └─ CLOSED-not-merged → emit "stop:preflight_closed",       ││
-│  │       reset to idle, invoke failure-escalation.                ││
-│  │                                                                ││
-│  └────────────────────────────────────────────────────────────────┘│
-│                                                                     │
-│  Always: release <runtime>/lock on exit (via trap)                  │
-│  Always: append event to <runtime>/last-run.json                    │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
-```
+## Superpowers-Inspired Principles
 
----
+1. **Hook routes, skill runs workflow.** Hooks may inject context or block stopping with a skill trigger. Hooks must not own long transactions.
+2. **Skill carries behavior and judgment.** PR review, rework, CI triage, stopping, merge, and onboarding decisions belong in `review-loop` or `github-actions-onboarding`.
+3. **Script is mechanical only.** Scripts need clear input/output, repeatability, and exit codes. They must not commit, push, wait for review, parse loop state, or merge.
+4. **Goal mode is native.** Claude Code `/goal` is a built-in session-scoped prompt-based Stop hook. Do not reimplement Goal state with project scripts.
+5. **Current session fixes.** The same Claude Code session and WorkTree handle feedback. Do not start another Claude CLI, daemon, or background fixer.
+6. **GitHub Action reviews only.** GitHub Claude Code Action is the reviewer, not the repair worker.
+7. **Description triggers, body instructs.** Skill frontmatter `description` states when to use the skill; workflow details live in the skill body.
 
-## Phase 3.5 — Workflow auto-split (Case A 1a–1c, expanded)
+## Hook Table
 
-**Why:** GitHub returns HTTP 401 ("Workflow validation failed") when the Claude App tries to authenticate against a PR whose `.github/workflows/*.yml` differs from the default branch. The plugin's auto-review breaks on any PR that mixes workflow + code changes. Solution: split the workflow changes into a separate "preflight" PR that auto-merges first.
-
-```
-┌─ Case A 1b — split-workflow-pr.sh ──────────────────────────────────┐
-│                                                                     │
-│  Inputs (stdin or auto-detected):                                   │
-│    • workflow file paths (from buckets.workflow)                    │
-│                                                                     │
-│  1. Detect base branch via gh repo view --json defaultBranchRef     │
-│  2. Refuse if any workflow file in committed (un-pushed) history    │
-│     (out of v1 scope; user fixes manually via git reset/amend)      │
-│  3. Save current working-tree content of each workflow file to      │
-│     $TMPDIR (one file per path)                                     │
-│  4. On the user's branch: revert each workflow file to              │
-│     origin/<base>'s version (so the diff no longer contains them);  │
-│     untracked workflow files removed entirely                       │
-│  5. Stash any remaining non-workflow changes (so the next checkout  │
-│     doesn't carry them over)                                        │
-│  6. git checkout -b preflight/<branch>-workflow-<timestamp>         │
-│       starting from origin/<base>                                   │
-│  7. Apply saved workflow content to the preflight branch;           │
-│       git add .github/workflows/<paths>; commit                     │
-│  8. git push -u origin <preflight-branch>                           │
-│  9. gh pr create --base <base> --head <preflight-branch>            │
-│       (PR title: "ci: workflow pre-merge for <branch>")             │
-│ 10. gh pr merge --auto --squash <pr_num>                            │
-│ 11. git checkout <user-branch>; git stash pop                        │
-│       (working tree now contains code-only changes)                 │
-│ 12. Output PR number on stdout; exit 0                              │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-                state.mode = waiting_for_preflight_merge
-                state.preflight_pr = N
-                              │
-              (subsequent stops handle Case E above)
-```
-
-**Branch-protection caveat.** Auto-merge on the preflight PR depends on required checks completing. If the user has configured `claude-code-review` as a *required* branch-protection check, the preflight will hang because the auto-review on a workflow-only PR also hits the 401. The plugin documents this in `using-24hour-ClaudeCode/SKILL.md`; users must keep `claude-code-review` advisory.
-
-**Override.** Setting `repair.allow_workflow_in_pr=true` in `.claude/24hour-ClaudeCode.config.json` skips the split; workflow + code go in one PR; auto-review fails; manual review required.
-
-**Out of scope (v1).** Already-committed workflow files are not auto-extracted (would require interactive rebase / `git filter-branch`). The hook returns `decision:block` with manual git-reset instructions.
-
----
-
-## Phase 4 — Claude reacts to `decision:block`
-
-**Trigger:** the previous Stop hook returned `{"decision":"block","reason":"..."}`.
-**Hook:** none — this is Claude's reasoning loop.
-
-```
-Claude receives `reason` as next-turn context:
-  "PR #N feedback requires rework. Iteration <X>/<MAX>.
-   <feedback summary with file:line citations>
-   Apply minimal fixes per the rework-implementation skill."
-                              │
-                              ▼
-Claude invokes the appropriate phase skill:
-  ├─ ci-feedback-analysis        (if CI failed)
-  ├─ review-feedback-analysis    (if CHANGES_REQUESTED or actionable comments)
-  └─ rework-implementation       (always — for the actual code changes)
-                              │
-                              ▼
-Claude edits the cited files
-                              │
-                              ▼
-PostToolUse hook fires → touches <runtime>/dirty
-                              │
-                              ▼
-Claude finishes turn → Stop hook fires
-                              │
-                              ▼
-              Loops back into Phase 3, Case A (pre-PR branch)
-              with mode=ready_for_rework → iteration += 1
-```
-
----
-
-## Phase 5 — Auto-merge & success
-
-When `decide-current-sha-feedback.sh` returns `pass`:
-
-```
-Stop hook (mode=waiting_for_review):
-  1. Verify PR headRefOid == current HEAD SHA
-  2. Verify CI success + verdict=pass + blocking_findings=[] + confidence != low
-  3. gh pr ready "$PR"
-  4. gh pr merge "$PR" --auto --squash
-  5. state.mode = "merged"
-  6. record_event "merged"
-  7. emit systemMessage: "merged" or "auto-merge enabled"
-  8. exit 0
-                              │
-                              ▼
-Claude sees the success message; the user's task is done.
-                              │
-                              ▼
-On the NEXT Stop fire (any subsequent turn):
-  Stop hook (mode=merged):
-    Cleanup current-pr.json, feedback.json, dirty
-    state.mode = "idle", iteration = 0, pr_number = null
-    exit 0
-                              │
-                              ▼
-                  Runtime is back to idle — ready for the next feature.
-```
-
----
-
-## State machine summary
-
-```
-            (turn ends, no diff)              (turn ends, diff non-empty)
-                  │                                       │
-                  ▼                                       ▼
-       ┌─────────────────────┐                 ┌──────────────────────┐
-       │    idle             │ ─── PHASE 3.A ─→│ waiting_for_review   │
-       │    iteration=0      │                 │  iteration=1         │
-       └─────────────────────┘                 └──────────────────────┘
-                  ▲                                       │
-                  │                                       │ PHASE 3.B
-                  │                                       │
-        ┌─────────┴─────────┐                       ┌─────┴─────┐
-        │   merged          │                       │  decide   │
-        │  (cleanup pass)   │                       └─────┬─────┘
-        └─────────▲─────────┘                             │
-                  │                                       │
-        pass                                         rework_required
-                  │                                       │
-                  │                                       ▼
-                  │                          ┌──────────────────────┐
-                  └──── (auto-merge) ────────│  ready_for_rework    │
-                                             │  Stop returns        │
-                                             │  decision:block      │
-                                             └──────────┬───────────┘
-                                                        │
-                                                        ▼
-                                              Claude edits → next turn
-                                                        │
-                                                        ▼
-                                             back to PHASE 3.A
-                                             (iteration += 1)
-```
-
----
-
-## Stop conditions (loop termination)
-
-Enforced by `scripts/check-stop-conditions.sh` (in pre-PR branch), `scripts/review-loop/decide-current-sha-feedback.sh`, and the Stop hook merge gate (in post-PR branch):
-
-| Condition | Token | Where caught |
+| Hook | Handler | Purpose |
 |---|---|---|
-| `round >= max_rounds` (default 5) | `stop:max_rounds` | decide-current-sha-feedback.sh |
-| Same blocking feedback repeats twice | `stop:repeated_feedback` | stop.sh feedback hash |
-| Same failure 2 iterations in a row | `stop:repeated_failure` | check-stop-conditions.sh (via `<runtime>/last-run.json` fail_streak) |
-| Branch is protected | `stop:protected_branch` | check-stop-conditions.sh |
-| `gh auth status` fails | `stop:gh_auth_lost` | check-stop-conditions.sh |
-| `git push` rejected | `stop:push_rejected` | stop.sh (push step) |
-| Edit touches `danger_paths` | `stop:danger_path` | stop.sh (via detect-changes.sh) |
+| `SessionStart` | `command: hooks/bootstrap.sh` | Detect environment and inject `github-actions-onboarding` or `using-24hour-ClaudeCode` as context. SessionStart does not support prompt hooks. |
+| `Stop` | `prompt` in `hooks/hooks.json` | Decide whether Claude may stop, or block with `REVIEW_LOOP_CONTINUE` so the current session uses `review-loop`. |
+| `Stop` while `review-loop` skill is active | `prompt` in `skills/review-loop/SKILL.md` | Keep the active review loop from stopping until `REVIEW_LOOP_DONE`, `REVIEW_LOOP_STOPPED`, or explicit user stop. |
 
-When any fires:
-- Stop hook emits a `systemMessage` STOP message.
-- `failure-escalation` skill is invoked to format the user-facing message.
-- Loop terminates; user must intervene.
+There is no `UserPromptSubmit` Goal hook, no `PostToolUse` dirty marker, no async monitor, and no Stop-hook shell workflow.
 
----
+## Runtime Files
 
-## Runtime state files
+In each user worktree:
 
-```
-<project>/.claude/runtime/24hour-ClaudeCode/
-├── .gitignore         # contains `*` — runtime files never leak into git diffs
-├── state.json         # mode, PR, iteration/round, current_head_sha, feedback hash
-├── lock/              # directory; presence = stop.sh in flight
-│   └── holder         # {pid, acquired_at}
-├── lock.queued        # presence = another Stop fired during lock-held
-├── dirty              # presence = code-modifying tool used this turn (set by post-tool-use.sh)
-├── last-run.json      # {ts, status, detail, fail_streak} per stop.sh invocation
-├── current-pr.json    # last known PR snapshot (number, url, isDraft, head SHA, ...)
-└── feedback.json      # optional diagnostics from poll-github.sh
+```text
+.claude/runtime/24hour-ClaudeCode/
+├── .gitignore                 # contains "*" and "!.gitignore"
+└── review-loop-state.md       # visible state owned by review-loop skill
 ```
 
-All writes are atomic (temp + mv). Direct edits are forbidden — always go through `scripts/runtime-state.sh`, `scripts/runtime-lock.sh`, or `scripts/poll-github.sh`.
+Allowed review-loop states:
 
----
-
-## End-to-end timeline (one feature)
-
-```
-T+0:00   User opens worktree, starts Claude Code
-         └─ SessionStart hook → bootstrap.sh → inject runtime contract
-
-T+0:01   User: "add OAuth refresh logic"
-
-T+0:30   Claude finishes editing src/auth/handler.ts
-         └─ PostToolUse hook fires after each Edit → touches dirty
-         └─ Stop hook fires (turn end)
-            └─ Case A: pre-PR branch
-               • detect-changes ✓
-               • verify (lint/typecheck/test) ✓
-               • commit "auto: WIP on feat/oauth-refresh [10:00:30]"
-               • push origin feat/oauth-refresh
-               • gh pr create → PR #142
-               • gh pr ready 142
-               • mode = waiting_for_review
-            └─ Case B: current-SHA review gate
-               • wait-for-current-sha-status.sh waits for CI + Claude Code Review
-               • fetch-review-verdict.sh reads review-verdict-<sha>.json
-               • decide-current-sha-feedback → pass
-               • gh pr merge --auto --squash 142
-               • mode = merged
-               • emit "PR #142 merged" or "Auto-merge enabled"
-
-T+3:01   User sees success message. No "continue" prompt was required.
-
-T+3:02   User starts a new feature in the same worktree
-         └─ Stop hook fires later (mode=merged)
-            └─ Case D: cleanup → mode=idle, iteration=0
-         └─ Loop ready for next feature.
+```text
+REVIEW_LOOP_ACTIVE
+REVIEW_LOOP_DONE
+REVIEW_LOOP_STOPPED
 ```
 
----
+The state file records PR number, current HEAD SHA, round number, review source, feedback summary, failure fingerprint, stop reason, and timestamp.
 
-## Slash commands (debug only — never primary control flow)
+## Goal Mode
 
-| Command | Effect |
+Use Claude Code's native `/goal <condition>`. Official hooks documentation describes `/goal` as a built-in shortcut for a session-scoped prompt-based Stop hook. This plugin does not create a second Goal guard or marker.
+
+When native `/goal` is still in progress, let the built-in Goal Stop hook keep Claude working. After `/goal` allows the turn to stop, the 24hour-ClaudeCode Stop prompt may route the session to `review-loop`.
+
+## Review Loop Skill
+
+When Stop emits `REVIEW_LOOP_CONTINUE`, Claude must invoke `skills/review-loop/SKILL.md`.
+
+The skill workflow:
+
+1. Confirm the current checkout is a feature worktree, not the main checkout or a protected branch.
+2. Mark `REVIEW_LOOP_ACTIVE`.
+3. Enforce configured max rounds and repeated-failure stops.
+4. Inspect local changes and configured `danger_paths`.
+5. Run configured local checks when applicable.
+6. Commit current changes.
+7. Push current branch.
+8. Create, update, and ready the PR.
+9. Record `CURRENT_HEAD_SHA=$(git rev-parse HEAD)`.
+10. Wait for a completed GitHub Claude Code Action review run whose `headSha` equals `CURRENT_HEAD_SHA`.
+11. Read real GitHub review surfaces.
+12. Fix blocking/important feedback in the same WorkTree.
+13. Classify required external CI failures inside the same skill.
+14. Repeat until pass, stopped, or merged.
+15. On reliable pass, enable auto-merge or merge, then write `REVIEW_LOOP_DONE`.
+
+The current Claude Code session is the only fixer. The GitHub Action is reviewer only.
+
+## Review Evidence Rules
+
+Do not assume custom verdict artifacts exist.
+
+Valid evidence can come from:
+
+- PR review submissions
+- inline review comments
+- check run details, annotations, and logs
+- PR comments only when clearly tied to the accepted current-SHA review run
+
+Hard gates:
+
+- No missing review as pass.
+- No stale review as pass.
+- No ambiguous review as pass.
+- No auto-merge unless PR head equals current local HEAD SHA.
+- If SHA binding cannot be confirmed, write `REVIEW_LOOP_STOPPED`.
+
+## Scripts
+
+Allowed script categories:
+
+- version synchronization
+- Superset config file install/verify
+
+Disallowed script categories:
+
+- whole-loop orchestration
+- waiting/deciding/merging controllers
+- custom verdict artifact gates
+- background daemons that write code
+
+## Official Hook Model
+
+Claude Code hooks are not only shell command strings. Official docs list hook handler types `command`, `http`, `mcp_tool`, `prompt`, and `agent`; they also define JSON output modes such as `additionalContext`, `systemMessage`, and Stop prompt decisions. Skill frontmatter can also define hooks scoped to the skill lifecycle.
+
+This plugin uses that model this way:
+
+- `SessionStart` remains a command hook because official docs say `SessionStart` supports `command` and `mcp_tool`, not `prompt`.
+- `Stop` is a prompt hook, because routing the current Claude session to a skill is a semantic decision.
+- `review-loop` also defines a skill-scoped prompt Stop hook so a closed loop cannot accidentally stop halfway.
+
+Do not add a prompt or agent hook that performs PR/review/merge work. Non-command hooks may route or guard; skills do the workflow.
+
+## Slash Commands
+
+| Command | Purpose |
 |---|---|
-| `/24hour-ClaudeCode:status` | Show state.json, last-run.json, current-pr.json contents |
-| `/24hour-ClaudeCode:retry` | Force-clear lock, manually trigger Stop hook once |
-| `/24hour-ClaudeCode:setup` | Re-run the onboarder (Phase 0) |
-| `/24hour-ClaudeCode:enable` | Set `config.enabled = true` |
-| `/24hour-ClaudeCode:disable` | Set `config.enabled = false` (both hooks go silent) |
-| `/24hour-ClaudeCode:clear-lock` | Last resort — delete `<runtime>/lock` after diagnostics |
+| `/24hour-ClaudeCode:setup` | Invoke onboarding skill. |
+| `/24hour-ClaudeCode:status` | Read visible review-loop state, git status, and current PR. |
+| `/24hour-ClaudeCode:retry` | Clear `REVIEW_LOOP_STOPPED` state after the root cause is fixed. |
+| `/24hour-ClaudeCode:disable` | Stop automatic review-loop triggering. |
+| `/24hour-ClaudeCode:enable` | Re-enable automatic review-loop triggering. |
 
-The main flow is hook-driven. These commands exist as escape hatches.
+## Acceptance Checks
 
----
-
-## Optional: Superset workspace integration
-
-Phases 0–5 above are the **Claude Code-driven** flow. They run regardless of whether you use [Superset](https://docs.superset.sh) (a 3rd-party multi-worktree manager).
-
-If your team uses Superset to manage worktrees as "workspaces", the plugin offers an **optional** integration that wraps around the auto-PR loop. Superset's lifecycle hooks are **separate from** Claude Code's hooks — they fire at different boundaries and serve different purposes.
-
-### Comparison
-
-| Layer | Trigger | Scope | What it does |
-|---|---|---|---|
-| **Claude Code hooks** (this plugin) | session start / tool boundary / turn boundary | Single conversation | Drives the auto-PR loop (Phases 1–5) |
-| **Superset hooks** (optional, 3rd-party) | workspace open / Run button / workspace close | Worktree lifecycle | Provisions the worktree (deps, env), starts dev server, cleans up |
-
-They overlap only at **workspace-open time** — Superset's `setup.sh` calls `check-actions.sh` to validate the auto-PR loop is healthy before the user starts coding.
-
-### Superset's three lifecycle scripts
-
-Installed by `bash scripts/install-superset-config.sh` (one-time, per repo). Lives at `<repo>/.superset/`:
-
-```
-when user opens a workspace ──→ .superset/setup.sh
-                                  ├─ verify worktree (git worktree list)
-                                  ├─ verify plugin installed at .claude/plugins/24hour-ClaudeCode/
-                                  ├─ verify gh authed + workflow scope
-                                  ├─ verify Claude Code Actions deployed (calls scripts/check-actions.sh)
-                                  ├─ initialize <runtime>/ directory (calls runtime-state.sh init)
-                                  ├─ install project deps (npm/pnpm/yarn/bun/pip/poetry/cargo/...)
-                                  └─ print one-screen cheat sheet of commands
-                                  ⚠ Forbidden here: commit, push, create PR, wait CI, auto-merge
-
-when user clicks Run ────────→ .superset/run.sh
-                                  └─ start project's dev server (project-specific; user customizes)
-                                  ⚠ Forbidden here: trigger PR flow, read CI, auto-merge
-
-when user closes workspace ──→ .superset/teardown.sh
-                                  ├─ clear runtime lock + transient decision files
-                                  └─ print reminder: "if PR is MERGED, clean up worktree from MAIN checkout"
-                                  ⚠ Forbidden here: close PR, delete remote branch, merge PR
-```
-
-### Where Superset overlaps with the auto-PR loop
-
-```
-T+0       User opens Superset workspace
-          └─ Superset runs .superset/setup.sh (NOT a Claude Code hook)
-             • check-actions.sh validates workflow YAMLs + secret
-             • runtime-state.sh init creates <runtime>/state.json (mode=idle)
-             • prints cheat sheet
-
-T+0:01    User opens Claude Code in this workspace
-          └─ Claude Code's SessionStart hook fires bootstrap.sh (Phase 1)
-             • Reads the same <runtime>/ Superset's setup.sh just initialized
-             • Injects the runtime contract; Claude is ready
-
-          From here, Phases 2–5 run normally. Superset is dormant
-          unless the user clicks Run (calls run.sh — independent of the loop).
-
-T+later   User closes the workspace
-          └─ Superset runs .superset/teardown.sh (NOT a Claude Code hook)
-             • Clears runtime lock so a future workspace creation is clean
-```
-
-### Without Superset
-
-Everything still works the same. Replace step T+0 above with:
-
-```
-T+0       User runs: git worktree add ../my-feature -b feat/my-feature
-          User runs: cd ../my-feature && claude
-          (User is responsible for running deps install themselves.)
-```
-
-The Claude Code hooks (Phases 1–5) are identical regardless. **The Superset integration is purely a convenience layer** for teams who already use Superset to manage worktrees.
-
-### Activation
+Use these checks when changing the runtime:
 
 ```bash
-# In the main checkout, one-time:
-bash .claude/plugins/24hour-ClaudeCode/scripts/install-superset-config.sh
-git add .superset/ && git commit -m "Add Superset config" && git push
+bash -n hooks/*.sh scripts/*.sh templates/*.sh
+jq -e . hooks/hooks.json
+jq -e . .claude-plugin/plugin.json
+jq -e . templates/24hour-ClaudeCode.config.json
+bash scripts/install-superset-config.sh --verify
 ```
 
-After this, every Superset workspace your team opens runs through the lifecycle scripts above. Verify with:
+For Stop routing, inspect `/hooks` in Claude Code and confirm:
 
-```bash
-bash .claude/plugins/24hour-ClaudeCode/scripts/install-superset-config.sh --verify
-```
-
-See `references/superset-integration.md` for full details, customization, and troubleshooting.
+- plugin `Stop` hook type is `prompt`
+- `review-loop` skill frontmatter defines a `Stop` prompt hook
+- no hook entry points to `hooks/stop.sh`, `hooks/goal-submit.sh`, or `hooks/post-tool-use.sh`

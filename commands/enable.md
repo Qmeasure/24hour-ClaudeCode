@@ -1,5 +1,5 @@
 ---
-description: Set 24hour-ClaudeCode.config.json `enabled: true`. Re-activates the SessionStart bootstrap and Stop hook loop for this project.
+description: "Set 24hour-ClaudeCode.config.json `enabled: true`. Re-activates SessionStart bootstrap and Stop prompt review-loop routing for this project."
 ---
 
 Re-enable the 24hour-ClaudeCode runtime for this project.
@@ -18,4 +18,4 @@ jq '.enabled = true' "$CONFIG" > "$tmp" && mv "$tmp" "$CONFIG"
 echo "✓ Enabled. Restart Claude Code (or /clear) to re-trigger SessionStart bootstrap."
 ```
 
-Tell the user the runtime is enabled but the full contract is injected on the next session start or `/clear`. The Stop hook checks `enabled` on every run, so it will resume on the next turn with real changes.
+Tell the user the runtime is enabled but the full contract is injected on the next session start or `/clear`. The Stop prompt can route the next completed implementation turn to `review-loop`.

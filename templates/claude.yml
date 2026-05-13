@@ -1,8 +1,6 @@
-# ⚠️ STATIC FALLBACK TEMPLATE
-# Used by `bash scripts/configure-actions.sh --static-templates`.
-# Default path uses scripts/render-workflows.sh to produce a project-tailored
-# version (with a `--disallowed-tools` list that knows your sensitive paths,
-# review max-turns sized to your repo, etc.). Prefer that.
+# Default static Claude workflow template.
+# Edit it in your project after onboarding if you want repo-specific policy or
+# prompt changes.
 
 name: Claude Code
 

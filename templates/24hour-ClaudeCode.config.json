@@ -1,10 +1,11 @@
 {
-  "_comment": "Project-level config for 24hour-ClaudeCode plugin. Installed by /24hour-ClaudeCode:setup. Edit by hand or via the enable/disable commands. Schema: enabled (bool, master switch), github.merge_method for docs-only direct merges, checks (local verify before auto-commit), repair (loop discipline), danger_paths (paths refused for auto-commit).",
+  "_comment": "Project-level config for 24hour-ClaudeCode plugin. Installed by /24hour-ClaudeCode:setup. Edit by hand or via the enable/disable commands. Schema: enabled (bool, master switch), github.merge_method, checks (local verify commands for the review-loop skill), repair (loop discipline), danger_paths (paths requiring explicit care).",
 
   "enabled": true,
 
   "github": {
-    "merge_method": "squash"
+    "merge_method": "squash",
+    "require_external_ci": false
   },
 
   "checks": {
@@ -17,7 +18,7 @@
     "max_iterations": 5,
     "review_loop_timeout": 7200,
     "review_loop_interval": 20,
-    "goal_mode_gate": true,
+    "print_event_timeline": true,
     "stop_on_repeated_failure": true,
     "allow_workflow_in_pr": false
   },

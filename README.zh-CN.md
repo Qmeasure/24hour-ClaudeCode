@@ -26,7 +26,7 @@
 >
 > *(Claude 修改、验证,并一直工作到 goal 达成为止。)*
 >
-> **Claude:** "Goal 已完成。我已打开 PR #142,正在等待 CI 和 review。"
+> **Claude:** "Goal 已完成。我已打开 PR #142,正在等待 Claude Code Action review。"
 >
 > *(两分钟后)*
 >
@@ -36,11 +36,24 @@
 
 > **Claude:** "审核发现一个 bug —— 新的 `/export` 接口没处理空数据集的情况(48 行)。我来修一下。"
 >
-> *(Claude 修好了。CI 重跑。通过。)*
+> *(Claude 修好了。review 重跑。通过。)*
 >
 > **Claude:** "✅ PR #142 已合入。"
 
 整个过程你**没敲过** `git commit`、`gh pr create`,**没点过**"merge"按钮。Plugin 全帮你做了。
+
+---
+
+## 设计原则
+
+Runtime 遵循一组 skill-first 原则:
+
+- Hook 只负责触发或注入上下文。
+- `review-loop` skill 承担 PR 主流程。
+- Script 只用于 version 同步和确定性的 Superset 文件安装。
+- 同一个 Claude Code session 在同一个 worktree 里修 review feedback。
+- GitHub Claude Code Action 只负责 review,不负责修复。
+- missing、stale、ambiguous 的 review 输出绝不能当作 pass。
 
 ---
 
@@ -49,10 +62,10 @@
 ✅ **适合的场景:**
 - 你在一个真实的 GitHub 项目上工作
 - 你希望 Claude Code 把整个 feature 开发到上线一气呵成,不用每一步都催它
-- 你能接受 worktree 自动化在 Goal 准备好后帮你 commit、push、开 PR、开启 auto-merge
+- 你能接受 review-loop skill 在 Goal 准备好后帮你 commit、push、开 PR、开启 auto-merge
 
 ❌ **暂时不适合的场景:**
-- 你在做探索性工作,还不想 commit
+- 你在做探索性工作,还不想启动 review loop
 - 你的项目不在 GitHub 上
 - 你在改高敏感代码(密码、生产配置)—— plugin 默认就拒绝碰这些路径,但你可能更想完全手动
 
@@ -67,7 +80,7 @@
                                                  │
 第 2 步(每个 repo 一次)→ Onboard                │  在你项目的「主目录」里
                           ↓                      │  (原始 git checkout)
-                          setup wizard           │  在 main 分支上
+                          onboarding skill       │  在默认分支上
                                                  │
 第 3 步(每个 feature) → 开一个 worktree        │  在你项目「旁边」的新目录
                           改代码 → 自动 PR     ─┘  (同级 sibling dir)
@@ -81,7 +94,7 @@
 | GitHub CLI 装好并登录 | `gh auth status` | `gh auth login --scopes workflow` |
 | Git 身份配好 | `git config --global user.name` | `git config --global user.name "..."` + `user.email` |
 | **一个项目文件夹** | 你知道它的完整路径,例如 `~/Projects/my-app` | 开工前先建好一个 |
-| **要么已有 GitHub repo,要么准备建一个新的** | 在该文件夹里 `gh repo view` 能跑通 | setup 向导会帮你建 |
+| **要么已有 GitHub repo,要么准备建一个新的** | 在该文件夹里 `gh repo view` 能跑通 | onboarding skill 会帮你确认 repo 路径 |
 
 ### 第 1 步 —— 装 plugin(一次性,全局,任意终端跑)
 
@@ -108,12 +121,12 @@ claude plugin install 24hour-ClaudeCode@24hour-ClaudeCode
 > ```bash
 > cd ~/Projects/my-app    # ← 改成你自己的项目路径
 > pwd                     # 确认在对的位置
-> ls .git                 # 这个目录应该存在(没有的话向导会引导你建)
+> ls .git                 # 这个目录应该存在(没有的话 onboarding skill 会先停下来让你确认)
 > ```
 
-> ⚠️ **为什么必须是"主目录":** setup 会把 `.github/workflows/claude*.yml` commit 到你的 repo。GitHub Actions 只有当这些文件存在于**默认分支**上时才能被授信运行,所以必须先落到 main。在 worktree 里跑 setup,plugin 会拒绝并提示你回主目录。
+> ⚠️ **为什么必须是"主目录":** setup 会把 `.github/workflows/claude*.yml` commit 到你的 repo。GitHub Actions 只有当这些文件存在于**默认分支**上时才能被授信运行,所以必须先落到默认分支。在 worktree 里跑 setup,plugin 会拒绝并提示你回主目录。
 
-确认你在 main(或你 repo 的默认分支)上:
+确认你在 repo 的默认分支上:
 
 ```bash
 git checkout main         # 或者 git checkout master / 你 repo 默认的那个分支
@@ -129,28 +142,35 @@ claude
 /24hour-ClaudeCode:setup
 ```
 
-向导帮你做剩下的一切。**每步都问你确认,没你点头不会动手**:
+`github-actions-onboarding` skill 会做剩下的流程。工作流由 skill 负责,直接运行 `gh`/`git` 命令;不再使用 onboarding helper script:
 
 1. **验证前置条件** —— `git`、`gh`、`claude` CLI 已装好,gh 有 `workflow` scope,git 身份已配。
 2. **定位你的 repo** —— 三种情况:
    - ✅ 已经连好 GitHub repo → 直接继续。
-   - ⚠️ 本地有 git repo 但**没接 GitHub 远端** → 向导帮你跑 `gh repo create`(它会问你 repo 名 / 公开私有 / 是否 push)。选"是"一步到位。
-   - ⚠️ 当前目录根本不是 git repo → 向导帮你 `git init -b main` + 创建首个 commit(你得至少有一个文件可 commit,加个 README 就够了)。
-3. **验证 Claude 审核机器人已安装** —— 通过 `check_suites` 侧信道自动检测(常见情况:你 GitHub 账号已经"全 repo 装"过,直接跳过)。没检测到才会打开 install 页面让你装。
-4. **设置 `CLAUDE_CODE_OAUTH_TOKEN` secret** —— 向导**无法**自动跑这步(`claude setup-token` 是浏览器 OAuth 交互、`gh secret set` 是 paste 提示,都需要你的终端)。向导会**打印精确的 2 条 CLI 命令**让你在终端跑,跑完按 Enter 回向导,自动验证。向导给你的具体命令:
+   - ⚠️ 本地有 git repo 但**没接 GitHub 远端** → skill 会和你确认最短安全路径,你选择后可以运行 `gh repo create`。
+   - ⚠️ 当前目录根本不是 git repo → skill 先停下来,让你确认 repo 初始化路径。
+3. **验证 Claude 审核机器人已安装** —— 通过 `check_suites` 侧信道检测(常见情况:你 GitHub 账号已经"全 repo 装"过,直接跳过)。没检测到才会给你 install 页面。
+4. **设置 `CLAUDE_CODE_OAUTH_TOKEN` secret** —— skill **无法**自动跑这步(`claude setup-token` 是浏览器 OAuth 交互、`gh secret set` 是 paste 提示,都需要你的终端)。它会检测 repo secret,也会检测对当前 repo 可见的 org secret。缺失时,skill 会同时打印两种配置方式:
    ```bash
    # 在你的终端里跑 —— 千万不要把 token 粘到聊天框
-   claude setup-token                                              # OAuth → 终端打印 sk-ant-oat01-...
-   gh secret set CLAUDE_CODE_OAUTH_TOKEN -R <owner>/<repo>          # 在 paste 提示里粘 token
-   ```
-   然后按 Enter 回向导,它会用 `gh api repos/<repo>/actions/secrets/CLAUDE_CODE_OAUTH_TOKEN` 精确探针验证(200=已设,404=没设)。
-5. **自动识别** test / lint / build 命令。
-6. **询问** 哪个 AI 来审 PR:Claude / OpenAI Codex / 两个都要。
-7. **生成 workflow YAML** —— 按你项目特点定制 → commit + push 到 `main`。
-8. **写入** `.claude/24hour-ClaudeCode.config.json`(你的本地可调参数)。
-9. **健康检查** —— 确认一切就绪。
+   claude setup-token
 
-向导跑完后,**在 GitHub 网页上做一件事**:打开你的 repo → Settings → General → ☑️ **Allow auto-merge**。没开的话,PR 永远不会在 CI 通过后自动合。
+   # 推荐:Organization 级 secret,一次覆盖整个 org
+   gh secret set CLAUDE_CODE_OAUTH_TOKEN --org <org> --visibility all
+
+   # 可选:Organization 级 selected repos
+   gh secret set CLAUDE_CODE_OAUTH_TOKEN --org <org> --repos <repo>
+
+   # 备选:没有 Organization 权限/方案时,只给当前 repo 设置
+   gh secret set CLAUDE_CODE_OAUTH_TOKEN -R <owner>/<repo>
+   ```
+   然后 skill 会用 `gh api` / `gh secret list` 直接验证 secret。
+5. **安装 Claude review workflow YAML** —— 从 plugin templates 复制。只有当你明确要求 Codex 或两者都要时,才会额外安装 Codex review。
+6. **提交并推送 onboarding 文件** 到 repo 默认分支。
+7. **写入** `.claude/24hour-ClaudeCode.config.json`(你的本地可调参数)。
+8. **健康检查** —— 确认一切就绪。
+
+Onboarding 完成后,**在 GitHub 网页上做一件事**:打开你的 repo → Settings → General → ☑️ **Allow auto-merge**。没开的话,PR 永远不会在 review 通过后自动合。
 
 ✅ **一次到位。** 这个 repo 配好了。后续你开的每个 worktree 都自动继承这套配置 —— 不需要再跑 setup。
 
@@ -184,9 +204,10 @@ Claude 在 `../my-feature` 里启动后,plugin 自动检测:
 
 Plugin 会接管后续流程:
 
-- Goal 达成后,或非 Goal 回合结束且存在真实 diff 时,Stop hook 会运行自动 commit 流水线(commit → push → PR)
+- 原生 `/goal` 达成后,或非 Goal 回合在实现后准备停止时,Stop prompt 会让同一个 Claude 会话继续,并要求它使用 `review-loop` skill
+- `review-loop` skill 负责 commit、push、创建或更新 PR,并等待 GitHub Claude Code Action review
 - PR 自动进入 review(Claude 或 Codex,看你之前选的)
-- 如果 review 或 CI 失败,plugin 把具体反馈喂给 Claude,Claude 自动改 —— 最多重试 5 轮
+- 如果 Claude Code Action review 失败,plugin 把具体反馈喂给 Claude,Claude 自动改 —— 最多重试 5 轮。外部 CI 默认不生成、不要求,除非你显式设置 `github.require_external_ci=true`。
 - 全绿了,plugin 开启 auto-merge,等 PR 合并
 - 完事。从「在报表页加个 CSV 导出」到「PR 已合并」,整个过程不用敲 `git`,不用点 "merge"。
 
@@ -198,19 +219,19 @@ git pull                              # 拉刚合的 commit 到本地
 git worktree remove ../my-feature     # 删 worktree
 ```
 
-> **为什么用 worktree?** 每个 worktree 是独立目录、独立分支。Plugin **只在 worktree 里激活**,所以你主目录永远干净 —— 你照样可以在主目录用 Claude Code 手动改东西、做探索、做只读工作,主目录里不会触发任何自动 commit。
+> **为什么用 worktree?** 每个 worktree 是独立目录、独立分支。Plugin **只在 worktree 里激活**,所以你主目录永远干净 —— 你照样可以在主目录用 Claude Code 手动改东西、做探索、做只读工作,主目录里不会启动 review loop。
 
 ---
 
 ## 常见疑问 FAQ
 
 **它会不会帮我 commit 不该 commit 的东西?**
-不会。它只 commit 你这次会话里实际改过的文件。`migrations/`、`.env.production`、`infra/`、`**/secrets/**` 这些敏感路径是默认禁止的 —— plugin 拒绝自动 commit 这些,会先问你要授权。
+不会。`review-loop` skill 只 commit 当前任务需要的文件。`migrations/`、`.env.production`、`infra/`、`**/secrets/**` 这些敏感路径默认在 `danger_paths` 里,提交前必须格外小心并确认有明确授权。
 
 **审核要是一直失败怎么办?**
 最多自动改 5 轮。还过不去就会自动停下来告诉你哪里有问题,你接手处理。
 
-**我想手改一下文件,但不想被自动 commit,怎么办?**
+**我想手改一下文件,但不想启动 review loop,怎么办?**
 两个选项:
 - 跑 `/24hour-ClaudeCode:disable` 暂停 plugin → 改完文件 → `/24hour-ClaudeCode:enable` 重新启用
 - 或者在主目录(不是 worktree)里改。plugin 只在 worktree 里激活
@@ -219,17 +240,17 @@ git worktree remove ../my-feature     # 删 worktree
 不会。它拒绝 push 到 `main` / `master` / `develop` / `staging` 这种受保护的分支。必须切到 feature 分支才会动。
 
 **怎么看它现在在干啥?**
-跑 `/24hour-ClaudeCode:status`,会展示当前的 PR、改了几轮、有没有警告。
+跑 `/24hour-ClaudeCode:status`,会展示 review-loop 状态、git status,以及当前分支的 PR。
 
 **自动审核太严 / 太松,能调吗?**
-能。review prompt **直接写在 workflow YAML 里**。改 `.github/workflows/claude-code-review.yml`(以及 `codex-review.yml` 如果用 Codex)的 `prompt:` 块,commit、push,下个 PR 自动生效,不需要重 setup。这个 prompt 在 onboarding 时已经按你 repo 的实际结构(top-level 目录、入口文件、敏感路径、repo 简介)定制好了。
+能。review prompt **直接写在 workflow YAML 里**。改 `.github/workflows/claude-code-review.yml`(以及 `codex-review.yml` 如果用 Codex)的 `prompt:` 块,commit、push,下个 PR 自动生效,不需要重 setup。
 
 **怎么更新到最新版本?**
 ```bash
 claude plugin marketplace update 24hour-ClaudeCode        # 从 GitHub 刷新 marketplace 元数据
 claude plugin update 24hour-ClaudeCode@24hour-ClaudeCode  # 安装最新版本
 ```
-更新完**重启 Claude Code**(`/exit` 退出再 `claude` 进来),让新的 hook 加载进来。`claude plugin list` 可以查看当前已装版本。注意 plugin 更新**不会**改你项目 `.github/workflows/` 下的 workflow YAML —— 想重新生成,跑 `/24hour-ClaudeCode:setup` 即可。
+更新完**重启 Claude Code**(`/exit` 退出再 `claude` 进来),让新的 hook 加载进来。`claude plugin list` 可以查看当前已装版本。注意 plugin 更新**不会**改你项目 `.github/workflows/` 下的 workflow YAML —— 想重新安装当前模板,跑 `/24hour-ClaudeCode:setup` 即可。
 
 **怎么卸载?**
 ```
@@ -243,9 +264,9 @@ claude plugin update 24hour-ClaudeCode@24hour-ClaudeCode  # 安装最新版本
 
 | 现象 | 怎么办 |
 |---|---|
-| "它好像卡住了" | 跑 `/24hour-ClaudeCode:status`。如果卡了超过 2 分钟,试试 `/24hour-ClaudeCode:clear-lock` |
+| "它好像卡住了" | 跑 `/24hour-ClaudeCode:status`。如果已经安全停止,先修根因,再用 `/24hour-ClaudeCode:retry` 清掉 stopped 状态 |
 | "它推不上代码" | 检查 `gh auth status`,需要的话重新登录 |
-| "它说闭环达到上限了" | plugin 试了 5 次都没让 CI/review 通过。看它的提示信息,自己接手修 |
+| "它说闭环达到上限了" | plugin 试了 5 次都没让 review 通过。看它的提示信息,自己接手修 |
 | "审核没跑起来" | 确认 GitHub 上的 "Claude" App 装到了你的 repo,且 `CLAUDE_CODE_OAUTH_TOKEN` 这个 secret 存在。重跑 `/24hour-ClaudeCode:setup` 即可 |
 | "我想从头来过" | `/24hour-ClaudeCode:setup` 重跑是安全的 —— 不会破坏已有配置 |
 
@@ -268,7 +289,7 @@ your-project/
 |---|---|
 | 让审核机器人专注某个方面(比如只审安全) | 改 `.github/workflows/claude-code-review.yml` 的 `prompt:` 块 |
 | 多给几次重试机会再放弃 | 配置文件里调 `repair.max_iterations`(默认 5) |
-| 加一个路径"永远不要自动 commit" | 配置文件 `danger_paths` 数组里加上 glob |
+| 加一个路径"提交前必须格外小心" | 配置文件 `danger_paths` 数组里加上 glob |
 | commit 前不跑测试(更快但风险大) | 配置文件 `checks.run_local_tests` 改成 `false` |
 
 ---
@@ -279,12 +300,11 @@ your-project/
 
 | 命令 | 作用 |
 |---|---|
-| `/24hour-ClaudeCode:setup` | (重)跑 setup 向导 |
+| `/24hour-ClaudeCode:setup` | 调用 onboarding skill |
 | `/24hour-ClaudeCode:status` | 看现在在干什么 |
-| `/24hour-ClaudeCode:retry` | 卡了之后强制重启自动闭环 |
+| `/24hour-ClaudeCode:retry` | 修好根因后清除 stopped 状态 |
 | `/24hour-ClaudeCode:disable` | 暂停 plugin |
 | `/24hour-ClaudeCode:enable` | 暂停后恢复 |
-| `/24hour-ClaudeCode:clear-lock` | 最后手段:清掉卡死的 lock |
 
 ---
 
@@ -301,9 +321,9 @@ your-project/
 
 ## 想了解它具体怎么工作?
 
-这个 plugin 用的是 Claude Code 的 **hook** 机制 —— 在特定时刻自动运行的小脚本(会话开始时、Claude 编辑文件后、Claude 结束一回合时)。
+这个 plugin 用的是 Claude Code 的 **hook** 机制。SessionStart 仍是 command hook,因为 Claude Code 官方不支持在 SessionStart 用 prompt hook;Stop 路由是 prompt hook,而 `review-loop` skill 自己也有 skill-scoped Stop prompt hook。
 
-如果你好奇底层架构 —— 哪些 hook 在什么时候触发、闭环怎么迭代、运行时状态机怎么走 —— 看 **[FLOW.zh-CN.md](FLOW.zh-CN.md)**([English version](FLOW.md))。
+如果你好奇底层架构 —— 哪些 hook 在什么时候触发、为什么 Stop 改成 prompt-based、为什么主流程放在 skill 里 —— 看 **[FLOW.zh-CN.md](FLOW.zh-CN.md)**([English version](FLOW.md))。
 
 ---
 

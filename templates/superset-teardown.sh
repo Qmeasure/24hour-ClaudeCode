@@ -18,14 +18,6 @@ RUNTIME="$WS_PATH/.claude/runtime/24hour-ClaudeCode"
 
 echo "▸ Workspace teardown: $WS_NAME"
 
-# Clean lock + transient decision files. Preserve state.json + last-run.json
-# in case the user wants to inspect them later — Superset's force-delete will
-# remove the entire worktree dir anyway.
-if [[ -d "$RUNTIME/lock" ]]; then
-  rm -rf "$RUNTIME/lock" "$RUNTIME/lock.queued" 2>/dev/null
-  echo "  ✓ Cleared runtime lock"
-fi
-
 # Reminder
 echo ""
 echo "Reminder: if PR is MERGED, clean up from MAIN checkout (NOT here):"

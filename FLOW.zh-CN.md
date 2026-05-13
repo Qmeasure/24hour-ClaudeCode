@@ -1,644 +1,160 @@
-[English](FLOW.md) | **中文**
+# 24hour-ClaudeCode Flow
 
-# 24hour-ClaudeCode — 完整运行时流程
+这是 skill-first review loop 的架构事实来源。
 
-本文档是 plugin 运行时行为的唯一权威说明。详细列出**每一个 hook**、其**触发条件**,以及从项目安装到 PR 合入的**完整事件闭环**。
-
----
-
-## Hook 总览
-
-| Hook | 触发条件 | 脚本 | 超时 | 职责 |
-|---|---|---|---|---|
-| `SessionStart` | 会话启动、`/clear`、自动压缩(matcher: `startup\|clear\|compact`) | `hooks/bootstrap.sh` | 10 秒 | 探测环境;注入运行时契约或 onboarding 指令 |
-| `UserPromptSubmit` | 用户提交 prompt;检测 `/goal` | `hooks/goal-submit.sh` | 5 秒 | 启用 Goal 模式 shipping guard,并注入 ready-to-ship 标记契约 |
-| `PostToolUse` | 每次 `Edit` / `Write` / `MultiEdit` 工具调用之后(matcher: `Edit\|Write\|MultiEdit`) | `hooks/post-tool-use.sh` | 5 秒 | 轻量标记 —— `touch <runtime>/dirty`,不做实质工作 |
-| `Stop` | 回合边界 —— 主 agent 结束响应时 | `hooks/stop.sh` | 7200 秒 | 主工作者 —— 拥有完整的 commit/push/PR/当前 SHA review 闭环 |
-
-**为什么这样切分:** `PostToolUse` 在每次工具调用后触发(粒度太细,不是"做完一批工作再 commit");`Stop` 每个回合触发一次 —— 正是"Claude 完成一组连贯编辑"应该产生 commit 的时机。marker 模式让 `Stop` 在纯聊天回合可以快速跳过。
-
-Hook 输出格式(参 Claude Code 官方规范):
-
-```jsonc
-// 信息性 —— Claude 可以正常停止
-{"systemMessage": "<text>"}
-
-// 阻断停止 —— `reason` 作为下一回合的上下文喂回 Claude
-{"decision": "block", "reason": "<text>"}
-```
-
----
-
-## Phase 0 — 安装 & Onboard
-
-由用户手动触发,不是 hook 驱动。
-
-```
-┌─ 用户在任意项目里运行 ───────────────────────────────────────────────┐
-│  /plugin marketplace add Qmeasure/24hour-ClaudeCode                 │
-│  /plugin install 24hour-ClaudeCode@24hour-ClaudeCode                 │
-└─────────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-              Plugin 安装到本机 Claude Code 的 plugin cache
-                              │
-                              ▼
-┌─ 用户运行 ──────────────────────────────────────────────────────────┐
-│  /24hour-ClaudeCode:setup                                           │
-└─────────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-   每个 repo 再通过 `/24hour-ClaudeCode:setup` 运行 scripts/configure-actions.sh:
-     1. 验证 gh / claude / git 已装且已登录(workflow scope)
-     2. 通过 `scripts/check-claude-app.sh` 自动检测 Claude App 是否装在该 repo
-        (check_suites 侧信道:`gh api repos/.../commits/.../check-suites` 用
-        user-PAT 可调,返回的列表包含每个装在 repo 且有 checks:write 权限的 App。
-        若 App.slug == "claude" && App.owner == "anthropics",即已安装。)
-        没检测到才打开 https://github.com/apps/claude 让用户装,等待回来重检。
-     3. 通过 `scripts/check-secret.sh` 精准探针验证 `CLAUDE_CODE_OAUTH_TOKEN`
-        (`gh api repos/.../actions/secrets/<NAME>` 返回 200 = 已设,404 = 未设)。
-        未设时,脚本**不会**自动跑 `claude setup-token` 或 `gh secret set` —
-        这两个命令都是交互式的(浏览器 OAuth + 终端粘贴),脚本驱动不了。改为
-        在 box 框里打印精确的 2 条 CLI 命令让用户在自己终端跑,跑完按 Enter
-        回脚本自动重新验证。
-     4. 跑 scripts/detect-project.sh:
-          • 项目类型(node/python/go/rust/...)
-          • base 分支
-          • test/lint/typecheck/build 命令
-          • monorepo 标志、仓库体量
-          • 风格指南(CLAUDE.md、AGENTS.md、...)
-          • 敏感路径(migrations/、infra/、.env.production、...)
-     5. 询问 provider:claude | codex | both
-        • 若选 codex/both:确保 OPENAI_API_KEY secret
-     6. 探测 .github/workflows/ 是否已有 CI workflow
-        • 若没有:询问是否生成 ci.yml
-     7. scripts/render-workflows.sh --provider <choice> [--include-ci]:
-          • 渲染 1–3 个 workflow YML(claude-code-review.yml、claude.yml、
-            codex-review.yml、ci.yml —— 组合按选择决定)
-          • (Review prompt 内联在 claude-code-review.yml / codex-review.yml,
-            从 detect-project 扫描结果烧死:REPO_DESCRIPTION、TOP_DIRS、ENTRY_FILES、DANGER_PATHS)
-     8. git add → commit → push(每次 push 前等用户确认)
-     9. 按模板生成 .claude/24hour-ClaudeCode.config.json
-    10. scripts/runtime-state.sh init → state.json,mode="idle"
-    11. scripts/check-actions.sh -v(最后健康检查)
-                              │
-                              ▼
-              ✅ 仓库准备好。自动闭环已启用。
-```
-
-Onboard 是幂等的 —— 重复跑 `/24hour-ClaudeCode:setup` 是安全的。
-
----
-
-## Phase 1 — Session 打开
-
-**触发条件:** 每次 Claude Code 会话启动、每次 `/clear`、每次自动压缩。
-**Hook:** `SessionStart`,matcher 为 `startup|clear|compact`。
-
-```
-┌─ SessionStart hook 触发 → bootstrap.sh ─────────────────────────────┐
-│                                                                     │
-│  通过 scripts/resolve-config-path.sh 解析有效的 config 路径:         │
-│  ├─ <worktree>/.claude/24hour-ClaudeCode.config.json 存在? 用它    │
-│  └─ 否则若在 worktree 内 → 回退到 main checkout 的 config            │
-│     (用 `git worktree list --porcelain` 定位 main)。这是新 worktree │
-│     自动继承 main onboarding 配置的核心机制,无需重新 onboard。      │
-│                                                                     │
-│  读取解析后的 config:                                                │
-│  ├─ enabled=false → 输出 "disabled" 提示,exit 0                     │
-│  └─ enabled=true → 继续                                             │
-│                                                                     │
-│  探测环境:                                                          │
-│  ├─ 是否在 worktree 内?(git rev-parse --git-dir vs --git-common-dir)│
-│  ├─ 是否在受保护分支?(main / master / develop / staging / ...)     │
-│  ├─ gh 是否已登录?                                                  │
-│  ├─ Claude Code Actions 是否已部署?(.github/workflows/claude*.yml) │
-│  └─ config 是否存在?(走上面解析路径——main 有就算 TRUE)             │
-│                                                                     │
-│  按探测结果分支(顺序很关键—— onboarding 检测在 dormant 之前):      │
-│  ├─ Onboarding 不完整 → 注入 github-actions-onboarding skill        │
-│  │     附带情景化位置提示:                                          │
-│  │       • 在 main 上:"在这里跑 /24hour-ClaudeCode:setup"           │
-│  │       • 在 worktree 里:"回 main checkout 跑 setup"               │
-│  │     用 <EXTREMELY-IMPORTANT> 包裹                                │
-│  ├─ 不在 worktree → 输出 "dormant" 提示(一行),exit 0              │
-│  ├─ 受保护分支 → 输出 "dormant" 提示(一行),exit 0                 │
-│  └─ 健康(在 worktree 内 + 已 onboard)→ 注入                       │
-│     using-24hour-ClaudeCode/SKILL.md(运行时契约)                   │
-│     用 <EXTREMELY-IMPORTANT> 包裹                                   │
-│                                                                     │
-│  若 <runtime>/state.json 不存在,初始化为 mode="idle"。              │
-│  写 <runtime>/.gitignore 内容为 `*`,确保 runtime 文件永不进入 diff。│
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-                stdout 输出 JSON:
-                {"hookSpecificOutput": {
-                  "hookEventName": "SessionStart",
-                  "additionalContext": "<runtime contract>"
-                }}
-                              │
-                              ▼
-              Claude 读到运行时契约,准备就绪。
-```
-
----
-
-## Phase 2 — Claude 改代码
-
-**触发条件:** Claude 调用 `Edit`、`Write` 或 `MultiEdit`。
-**Hook:** `PostToolUse`,matcher 为 `Edit|Write|MultiEdit`。
-
-```
-┌─ 每次 Edit/Write/MultiEdit 后,PostToolUse hook 触发 ────────────────┐
-│                                                                     │
-│  post-tool-use.sh(5 行):                                           │
-│    mkdir -p <runtime>                                               │
-│    touch <runtime>/dirty                                            │
-│    exit 0                                                           │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
-```
-
-`PostToolUse` 的全部职责就是这些。无 JSON 输出。无 commit。dirty 标记是给即将触发的 `Stop` hook 一个快速提示("这一回合有工具调用改了文件")。`git diff` 仍是真值来源。
-
----
-
-## Phase 3 — 回合结束,闭环运行
-
-**触发条件:** Claude 完成响应(回合边界)。
-**Hook:** `Stop`(无 matcher;每个回合结束都触发)。
-
-这是主工作者。它是 **mode-aware** —— `state.json.mode` ∈ {`idle`, `waiting_for_preflight_merge`, `waiting_for_review`, `ready_for_rework`, `merged`, `stopped`}。旧的 `waiting_for_checks` 状态会兼容路由到 `waiting_for_review`。
-
-如果用户用 `/goal ...` 启动任务,`hooks/goal-submit.sh` 会通过 `UserPromptSubmit` 写入 `<runtime>/goal-guard.json` 并注入 ready-to-ship 标记契约。只要 guard 存在,Stop hook 不会提交/推送/建 PR,除非 Claude 最新消息以这个精确标记作为最后一个非空行,且不在代码块内:
+## 摘要
 
 ```text
-<24hour-ClaudeCode-goal-complete ready-to-ship="true" />
+SessionStart hook = 注入正确 skill context
+Stop prompt hook = 把当前 session 路由回 review-loop
+review-loop skill = 完整 PR/review/fix/merge workflow
+github-actions-onboarding skill = 完整 repo onboarding workflow
+当前 Claude Code session = fixer
+GitHub Claude Code Action = reviewer
+script = 只做确定性机械工具
 ```
 
-这样可以避免 `/goal` 还在跨 turn 继续时,plugin 因为中间 diff 过早发 PR。Stop hook 也会读取 Claude Code 原生 `goal_status` transcript attachment 作为 fallback,但当前 Claude Code 版本里原生 `/goal` 评估器运行在项目 Stop hook 之后,所以同一轮达成并发 PR 仍依赖该 marker。
+Stop hook 不是 workflow engine。它是 prompt-based router: Claude 看起来准备在实现后停止时,它阻止停止并给出很短的 `review-loop` skill trigger。
 
-```
-┌─ Stop hook 触发 → stop.sh ──────────────────────────────────────────┐
-│                                                                     │
-│  前置检查:                                                          │
-│  ├─ enabled=false  → 静默 exit 0                                    │
-│  ├─ 不在 worktree → 静默 exit 0                                     │
-│  └─ 获取 <runtime>/lock                                             │
-│       └─ 若已被前一个 Stop 持有 → 静默 exit 0                       │
-│                                                                     │
-│  从 <runtime>/state.json 读 mode(默认:idle)                       │
-│  读 dirty 标记和 git diff 状态                                      │
-│                                                                     │
-│  ┌─ 按 mode 分发 ──────────────────────────────────────────────────┐│
-│  │                                                                ││
-│  │  Case A — mode ∈ {idle, ready_for_rework} 且 diff 非空         ││
-│  │           [PRE-PR 分支]                                         ││
-│  │  ─────────────────────────────────────────────────────────────  ││
-│  │  1. detect-changes.sh —— 文件分类(code / lock / docs /         ││
-│  │       secrets / workflow / danger)                              ││
-│  │     └─ 若 goal guard 激活且最新 assistant message               ││
-│  │        没有 ready-to-ship 标记 → 输出 systemMessage,不提交。   ││
-│  │     └─ buckets.workflow 非空 且                                 ││
-│  │        repair.allow_workflow_in_pr ≠ true →                     ││
-│  │           1a. 若 .github/workflows/* 在 已提交但未 push 的       ││
-│  │               历史中 → 返回 decision:block,要求用户手动         ││
-│  │               git reset/amend(stop:committed_workflow_changes)。 ││
-│  │           1b. 否则调用 split-workflow-pr.sh:                    ││
-│  │                 • 保存 workflow 文件内容                         ││
-│  │                 • 在用户分支上把 workflow 文件还原到 base 版本   ││
-│  │                 • 创建 preflight/<branch>-workflow-<ts>          ││
-│  │                   分支(基于 origin/<base>)                     ││
-│  │                 • 仅应用 workflow 变更;commit + push           ││
-│  │                 • gh pr create + gh pr merge --auto --squash    ││
-│  │                 • 切回用户分支                                   ││
-│  │           1c. state.mode = waiting_for_preflight_merge          ││
-│  │               state.preflight_pr = N                            ││
-│  │               输出 "📦 已自动拆分为 preflight PR #N",exit。     ││
-│  │     └─ 任一路径命中 danger_paths → 返回 decision:block          ││
-│  │        reason = "edit touches sensitive path; need approval"   ││
-│  │  2. check-stop-conditions.sh —— 验证 max_iterations、分支      ││
-│  │     保护、gh 登录、diff 体积                                    ││
-│  │     └─ 返回 stop:* token → 输出 info + 调用                     ││
-│  │        failure-escalation,exit 0                               ││
-│  │  3. 跑 config.checks.commands(lint/typecheck/test)fail-fast   ││
-│  │     └─ 任一失败 → 返回 decision:block,reason 含                 ││
-│  │        "local check failed: <最后 50 行>"                       ││
-│  │  4. auto-commit.sh —— stage 非 danger 文件,                    ││
-│  │       commit "auto: WIP on <branch> [HH:MM:SS]"(占位)         ││
-│  │  5. git push -u origin <branch>                                ││
-│  │  6. ensure-pr.sh —— gh pr view || gh pr create --fill          ││
-│  │  7. iteration 计数:                                             ││
-│  │     • mode 原本是 ready_for_rework → iteration += 1             ││
-│  │     • mode 原本是 idle → iteration = 1(此 PR 首次 push)        ││
-│  │  8. 状态转移:                                                   ││
-│  │     • mode = waiting_for_review                                 ││
-│  │     • pr_number = N                                             ││
-│  │     • current_head_sha = git rev-parse HEAD                    ││
-│  │     • 清除 <runtime>/dirty                                      ││
-│  │  9. gh pr ready,并在同一次 Stop hook 中进入 Case B。           ││
-│  │     Claude 不会先停止等用户说 continue。                       ││
-│  │                                                                ││
-│  ├────────────────────────────────────────────────────────────────┤│
-│  │                                                                ││
-│  │  Case B — mode = waiting_for_review                            ││
-│  │           [POST-PR 分支 —— 当前 SHA REVIEW GATE]                ││
-│  │  ─────────────────────────────────────────────────────────────  ││
-│  │  1. HEAD_SHA = git rev-parse HEAD                              ││
-│  │  2. wait-for-current-sha-status.sh 等待当前 SHA 的 CI 和       ││
-│  │     Claude Code Review workflow。timeout/missing/inconclusive ││
-│  │     是安全停止,不是下一次 Stop 重试。                          ││
-│  │  3. fetch-review-verdict.sh 读取 artifact 或 hidden JSON,并    ││
-│  │     校验 verdict.head_sha == HEAD_SHA。                         ││
-│  │  4. decide-current-sha-feedback.sh —— 应用决策矩阵:            ││
-│  │                                                                ││
-│  │     ── pass ──                                                  ││
-│  │     gh pr merge --auto --squash                                ││
-│  │     mode = "merged"                                             ││
-│  │     输出 "✅ PR #N merged: <url>",exit 0                       ││
-│  │                                                                ││
-│  │     ── rework_required ──                                       ││
-│  │     mode = "ready_for_rework"                                   ││
-│  │     返回 JSON:                                                  ││
-│  │       {"decision":"block",                                      ││
-│  │        "reason":"Current HEAD SHA feedback...\n                 ││
-│  │                  只修这些 findings,并留在当前 WorkTree。"}     ││
-│  │     ⚠ 这阻止 Claude 停止。Claude 把 `reason` 当下一回合上下文,  ││
-│  │       继续编辑。                                                ││
-│  │                                                                ││
-│  │     ── stop ──                                                  ││
-│  │     verdict missing/stale、infra failure、needs_human、        ││
-│  │     inconclusive、timeout、重复反馈或达到 max rounds。         ││
-│  │     mode = "stopped"; 输出 systemMessage; 不 block。          ││
-│  │     exit 0                                                      ││
-│  │                                                                ││
-│  ├────────────────────────────────────────────────────────────────┤│
-│  │                                                                ││
-│  │  Case C — mode = idle,diff 为空                                ││
-│  │           [纯聊天回合]                                          ││
-│  │  ─────────────────────────────────────────────────────────────  ││
-│  │  无事可做。释放 lock。exit 0。                                  ││
-│  │                                                                ││
-│  ├────────────────────────────────────────────────────────────────┤│
-│  │                                                                ││
-│  │  Case D — mode = merged                                         ││
-│  │           [合入后清理]                                          ││
-│  │  ─────────────────────────────────────────────────────────────  ││
-│  │  删除 <runtime>/current-pr.json、feedback.json、dirty           ││
-│  │  重置 state.json:mode="idle",iteration=0,pr_number=null      ││
-│  │  exit 0                                                         ││
-│  │                                                                ││
-│  ├────────────────────────────────────────────────────────────────┤│
-│  │                                                                ││
-│  │  Case E — mode = waiting_for_preflight_merge                    ││
-│  │           [Workflow 文件 preflight PR 进行中]                   ││
-│  │  ─────────────────────────────────────────────────────────────  ││
-│  │  gh pr view <preflight_pr> --json state                        ││
-│  │     └─ MERGED → git fetch + git rebase origin/<base>;          ││
-│  │       state.mode = idle, state.preflight_pr = null;            ││
-│  │       FALL THROUGH 到 Case A(继续提交剩余 diff)。             ││
-│  │       Rebase 冲突 → 输出 "请手动解决",exit。                   ││
-│  │     └─ OPEN → 输出 "仍在等待",exit 0。                         ││
-│  │     └─ CLOSED-not-merged → 输出 stop:preflight_closed,         ││
-│  │       重置为 idle,调用 failure-escalation。                    ││
-│  │                                                                ││
-│  └────────────────────────────────────────────────────────────────┘│
-│                                                                     │
-│  始终(via trap):退出时释放 <runtime>/lock                         │
-│  始终:在 <runtime>/last-run.json 追加事件                          │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
-```
+## 借鉴 Superpowers 的原则
 
----
+1. **Hook 负责路由,skill 执行 workflow。** Hook 可以注入上下文或用 skill trigger 阻止停止;Hook 不承载长事务。
+2. **Skill 承载行为和判断。** PR review、rework、CI triage、停止、merge、onboarding 都属于 `review-loop` 或 `github-actions-onboarding`。
+3. **Script 只做机械确定性任务。** Script 必须输入输出明确、可重复、可用 exit code 表达失败;不能 commit、push、wait review、解析 loop 状态或 merge。
+4. **Goal mode 用官方能力。** Claude Code `/goal` 本身就是内置的 session-scoped prompt-based Stop hook。不要用项目脚本二次实现 Goal state。
+5. **当前 session 修复。** 同一个 Claude Code session、同一个 WorkTree 负责处理 feedback;不要启动另一个 Claude CLI、daemon 或后台修复者。
+6. **GitHub Action 只做 reviewer。** GitHub Claude Code Action 是审核者,不是修复者。
+7. **description 写触发条件,正文写流程。** Skill frontmatter 的 `description` 只说明什么时候用;详细 workflow 写在 skill body。
 
-## Phase 3.5 — Workflow 自动拆分(Case A 1a–1c 详解)
+## Hook 表
 
-**为什么:** 当 PR 修改了 `.github/workflows/*.yml` 且与 default 分支不同时,GitHub 会以 HTTP 401("Workflow validation failed")拒绝给 Claude App 发 token。这条安全策略防止 PR 通过修改 workflow 文件偷取权限,但也导致**任何混合了 workflow + code 的 PR 自动 review 直接失败**。解决方案:把 workflow 改动拆到一个独立的 "preflight" PR 里,先合入,再让主分支的 PR 继续。
-
-```
-┌─ Case A 1b — split-workflow-pr.sh ──────────────────────────────────┐
-│                                                                     │
-│  输入(stdin 或自动检测):                                          │
-│    • workflow 文件路径列表(来自 buckets.workflow)                 │
-│                                                                     │
-│  1. 通过 gh repo view --json defaultBranchRef 拿到 base 分支        │
-│  2. 若 workflow 文件已在已提交但未 push 的历史里 → 拒绝             │
-│     (v1 范围外;用户手动 git reset/amend 后重试)                   │
-│  3. 把每个 workflow 文件的当前工作区内容保存到 $TMPDIR              │
-│  4. 在用户分支上:把每个 workflow 文件还原成 origin/<base> 的版本   │
-│     (untracked 的 workflow 文件直接删除);diff 中不再含 workflow   │
-│  5. 把剩余的非 workflow 改动 stash 起来                             │
-│  6. git checkout -b preflight/<branch>-workflow-<时间戳>            │
-│       基于 origin/<base>                                            │
-│  7. 把保存的 workflow 内容应用到 preflight 分支;                   │
-│       git add .github/workflows/<paths>;commit                      │
-│  8. git push -u origin <preflight-branch>                           │
-│  9. gh pr create --base <base> --head <preflight-branch>            │
-│       (PR 标题:"ci: workflow pre-merge for <branch>")              │
-│ 10. gh pr merge --auto --squash <pr_num>                            │
-│ 11. git checkout <user-branch>;git stash pop                        │
-│       (工作区只剩非 workflow 改动)                                 │
-│ 12. stdout 输出 PR number;exit 0                                   │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-                state.mode = waiting_for_preflight_merge
-                state.preflight_pr = N
-                              │
-              (后续 Stop 走上面的 Case E)
-```
-
-**分支保护注意事项。** Preflight PR 的 auto-merge 取决于 required check 通过。如果用户把 `claude-code-review` 配成了 *required* 分支保护检查,preflight 会卡住——因为 workflow-only 的 PR 自身的 auto-review 也会撞上 401。**必须**保持 `claude-code-review` 为 advisory(非 required)。文档:`using-24hour-ClaudeCode/SKILL.md`。
-
-**覆盖。** 在 `.claude/24hour-ClaudeCode.config.json` 设 `repair.allow_workflow_in_pr=true` 跳过拆分;workflow + code 一并进同一个 PR;auto-review 失败;需手动 review。
-
-**v1 范围外。** 已提交到历史的 workflow 文件不会自动抽离(需要交互式 rebase / `git filter-branch`)。Hook 返回 `decision:block`,要求用户手动 git reset/amend。
-
----
-
-## Phase 4 — Claude 响应 `decision:block`
-
-**触发条件:** 上一个 Stop hook 返回了 `{"decision":"block","reason":"..."}`。
-**Hook:** 无 —— 这是 Claude 的推理循环。
-
-```
-Claude 把 `reason` 作为下一回合上下文读入:
-  "PR #N feedback requires rework. Iteration <X>/<MAX>。
-   <反馈摘要,含 file:line 引用>
-   按 rework-implementation skill 应用最小修改。"
-                              │
-                              ▼
-Claude 调用对应的阶段 skill:
-  ├─ ci-feedback-analysis        (CI 失败时)
-  ├─ review-feedback-analysis    (CHANGES_REQUESTED 或可执行评论时)
-  └─ rework-implementation       (始终 —— 实际改代码)
-                              │
-                              ▼
-Claude 编辑被引用的文件
-                              │
-                              ▼
-PostToolUse hook 触发 → touch <runtime>/dirty
-                              │
-                              ▼
-Claude 结束本回合 → Stop hook 触发
-                              │
-                              ▼
-              回到 Phase 3,Case A(pre-PR 分支)
-              mode=ready_for_rework → iteration += 1
-```
-
----
-
-## Phase 5 — Auto-merge 与成功
-
-当 `decide-current-sha-feedback.sh` 返回 `pass`:
-
-```
-Stop hook(mode=waiting_for_review):
-  1. 校验 PR headRefOid == 当前 HEAD SHA
-  2. 校验 CI success + verdict=pass + blocking_findings=[] + confidence != low
-  3. gh pr ready "$PR"
-  4. gh pr merge "$PR" --auto --squash
-  5. state.mode = "merged"
-  6. record_event "merged"
-  7. 输出 systemMessage:"merged" 或 "auto-merge enabled"
-  8. exit 0
-                              │
-                              ▼
-Claude 看到成功消息;用户的任务完成。
-                              │
-                              ▼
-下一次 Stop 触发(任意后续回合):
-  Stop hook(mode=merged):
-    清除 current-pr.json、feedback.json、dirty
-    state.mode = "idle",iteration = 0,pr_number = null
-    exit 0
-                              │
-                              ▼
-                  运行时回到 idle —— 准备好接下一个 feature。
-```
-
----
-
-## 状态机汇总
-
-```
-            (回合结束,无 diff)            (回合结束,diff 非空)
-                  │                                       │
-                  ▼                                       ▼
-       ┌─────────────────────┐                 ┌──────────────────────┐
-       │    idle             │ ─── PHASE 3.A ─→│ waiting_for_review   │
-       │    iteration=0      │                 │  iteration=1         │
-       └─────────────────────┘                 └──────────────────────┘
-                  ▲                                       │
-                  │                                       │ PHASE 3.B
-                  │                                       │
-        ┌─────────┴─────────┐                       ┌─────┴─────┐
-        │   merged          │                       │  decide   │
-        │  (清理回合)       │                       └─────┬─────┘
-        └─────────▲─────────┘                             │
-                  │                                       │
-        pass                                         rework_required
-                  │                                       │
-                  │                                       ▼
-                  │                          ┌──────────────────────┐
-                  └──── (auto-merge) ────────│  ready_for_rework    │
-                                             │  Stop 返回           │
-                                             │  decision:block       │
-                                             └──────────┬───────────┘
-                                                        │
-                                                        ▼
-                                              Claude 编辑 → 下回合
-                                                        │
-                                                        ▼
-                                             回到 PHASE 3.A
-                                             (iteration += 1)
-```
-
----
-
-## 停止条件(闭环终止)
-
-由 `scripts/check-stop-conditions.sh`(pre-PR 分支)、`scripts/review-loop/decide-current-sha-feedback.sh` 和 Stop hook merge gate(post-PR 分支)强制执行:
-
-| 条件 | Token | 在哪里捕获 |
+| Hook | Handler | 作用 |
 |---|---|---|
-| `round >= max_rounds`(默认 5) | `stop:max_rounds` | decide-current-sha-feedback.sh |
-| 同一 blocking feedback 重复 2 次 | `stop:repeated_feedback` | stop.sh feedback hash |
-| 同一失败连续 2 轮 | `stop:repeated_failure` | check-stop-conditions.sh(看 `<runtime>/last-run.json` 的 fail_streak) |
-| 当前在受保护分支 | `stop:protected_branch` | check-stop-conditions.sh |
-| `gh auth status` 失败 | `stop:gh_auth_lost` | check-stop-conditions.sh |
-| `git push` 被拒 | `stop:push_rejected` | stop.sh(push 步骤) |
-| 编辑命中 `danger_paths` | `stop:danger_path` | stop.sh(via detect-changes.sh) |
+| `SessionStart` | `command: hooks/bootstrap.sh` | 探测环境,注入 `github-actions-onboarding` 或 `using-24hour-ClaudeCode` context。官方 `SessionStart` 不支持 prompt hook。 |
+| `Stop` | `hooks/hooks.json` 里的 `prompt` | 判断 Claude 是否可以停止;或阻止停止并输出 `REVIEW_LOOP_CONTINUE`,让当前 session 使用 `review-loop`。 |
+| `review-loop` skill active 时的 `Stop` | `skills/review-loop/SKILL.md` 里的 `prompt` | 防止 active review loop 在 `REVIEW_LOOP_DONE`、`REVIEW_LOOP_STOPPED` 或用户明确要求前中途停止。 |
 
-任一触发时:
-- Stop hook 输出 `systemMessage` STOP 消息
-- 调用 `failure-escalation` skill 格式化用户向消息
-- 闭环终止;需要用户介入
+没有 `UserPromptSubmit` Goal hook,没有 `PostToolUse` dirty marker,没有 async monitor,也没有 Stop-hook shell workflow。
 
----
+## Runtime 文件
 
-## 运行时状态文件
+每个用户 worktree 里:
 
-```
-<project>/.claude/runtime/24hour-ClaudeCode/
-├── .gitignore         # 内容 `*` —— runtime 文件永不进入 git diff
-├── state.json         # mode、PR、iteration/round、current_head_sha、feedback hash
-├── lock/              # 目录;存在 = stop.sh 正在运行
-│   └── holder         # {pid, acquired_at}
-├── lock.queued        # 存在 = lock 持有期间又有 Stop 触发
-├── dirty              # 存在 = 此回合有代码修改工具被调用(post-tool-use.sh 设置)
-├── last-run.json      # 每次 stop.sh 调用的 {ts, status, detail, fail_streak}
-├── current-pr.json    # 最近一次 PR 快照(number, url, isDraft, head SHA, ...)
-└── feedback.json      # poll-github.sh 生成的可选诊断快照
+```text
+.claude/runtime/24hour-ClaudeCode/
+├── .gitignore                 # 内容是 "*" 和 "!.gitignore"
+└── review-loop-state.md       # review-loop skill 维护的可见状态
 ```
 
-所有写入都是原子的(temp + mv)。直接编辑被禁止 —— 必须通过 `scripts/runtime-state.sh`、`scripts/runtime-lock.sh` 或 `scripts/poll-github.sh`。
+允许的 review-loop 状态:
 
----
-
-## 端到端时间线(一个 feature)
-
-```
-T+0:00   用户开 worktree,启动 Claude Code
-         └─ SessionStart hook → bootstrap.sh → 注入运行时契约
-
-T+0:01   用户:"加 OAuth refresh 逻辑"
-
-T+0:30   Claude 改完 src/auth/handler.ts
-         └─ 每次 Edit 后 PostToolUse hook 触发 → touch dirty
-         └─ Stop hook 触发(回合结束)
-            └─ Case A:pre-PR 分支
-               • detect-changes ✓
-               • verify (lint/typecheck/test) ✓
-               • commit "auto: WIP on feat/oauth-refresh [10:00:30]"
-               • push origin feat/oauth-refresh
-               • gh pr create → PR #142
-               • gh pr ready 142
-               • mode = waiting_for_review
-            └─ Case B:当前 SHA review gate
-               • wait-for-current-sha-status.sh 等待 CI + Claude Code Review
-               • fetch-review-verdict.sh 读取 review-verdict-<sha>.json
-               • decide-current-sha-feedback → pass
-               • gh pr merge --auto --squash 142
-               • mode = merged
-               • 输出 "✅ PR #142 merged: <url>"
-
-T+3:01   用户看到成功消息。
-
-T+3:02   用户在同一 worktree 开始下一个 feature
-         └─ Stop hook 之后再次触发(mode=merged)
-            └─ Case D:清理 → mode=idle,iteration=0
-         └─ 闭环准备好接下一个 feature。
+```text
+REVIEW_LOOP_ACTIVE
+REVIEW_LOOP_DONE
+REVIEW_LOOP_STOPPED
 ```
 
----
+状态文件记录 PR number、当前 HEAD SHA、轮次、review 来源、反馈摘要、失败指纹、停止原因和时间戳。
 
-## Slash 命令(只用来 debug —— 永远不是主控制流)
+## Goal Mode
 
-| 命令 | 作用 |
+使用 Claude Code 原生 `/goal <condition>`。官方 hooks 文档说明 `/goal` 是内置的 session-scoped prompt-based Stop hook。本 plugin 不再创建第二套 Goal guard 或 marker。
+
+当原生 `/goal` 仍未完成时,让内置 Goal Stop hook 继续驱动 Claude。等 `/goal` 允许回合停止后,24hour-ClaudeCode 的 Stop prompt 才可以把 session 路由到 `review-loop`。
+
+## Review Loop Skill
+
+Stop 输出 `REVIEW_LOOP_CONTINUE` 后,Claude 必须使用 `skills/review-loop/SKILL.md`。
+
+Skill 工作流:
+
+1. 确认当前 checkout 是 feature worktree,不是主 checkout 或受保护分支。
+2. 写 `REVIEW_LOOP_ACTIVE`。
+3. 执行配置的最大轮次和重复失败停止规则。
+4. 检查本地变更和配置的 `danger_paths`。
+5. 必要时运行本地 checks。
+6. commit 当前变更。
+7. push 当前分支。
+8. 创建、更新并 ready PR。
+9. 记录 `CURRENT_HEAD_SHA=$(git rev-parse HEAD)`。
+10. 等待 `headSha` 等于 `CURRENT_HEAD_SHA` 的 GitHub Claude Code Action review run 完成。
+11. 读取真实 GitHub review surfaces。
+12. 在同一个 WorkTree 修 blocking/important feedback。
+13. 在同一个 skill 内分类 required external CI failure。
+14. 重复直到 pass、stopped 或 merged。
+15. 可靠 pass 后启用 auto-merge 或 merge,再写 `REVIEW_LOOP_DONE`。
+
+当前 Claude Code session 是唯一 fixer。GitHub Action 只做 reviewer。
+
+## Review Evidence 规则
+
+不要假设存在自定义 verdict artifact。
+
+有效证据可以来自:
+
+- PR review submissions
+- inline review comments
+- check run details、annotations、logs
+- 只有在明确绑定 accepted current-SHA review run 时才接受 PR comments
+
+硬门槛:
+
+- missing review 不能当 pass。
+- stale review 不能当 pass。
+- ambiguous review 不能当 pass。
+- PR head 不等于当前本地 HEAD SHA 时不能 auto-merge。
+- 无法确认 SHA 绑定时写 `REVIEW_LOOP_STOPPED`。
+
+## Scripts
+
+允许的 script 类型:
+
+- version 同步
+- Superset config 文件 install/verify
+
+禁止的 script 类型:
+
+- 整个 loop orchestration
+- wait/decide/merge controller
+- custom verdict artifact gate
+- 写代码的后台 daemon
+
+## 官方 Hook 模型
+
+Claude Code hook 不只有 shell command 字符串。官方文档列出的 hook handler 类型包括 `command`、`http`、`mcp_tool`、`prompt`、`agent`;也定义了 `additionalContext`、`systemMessage`、Stop prompt decision 等 JSON 输出模式。Skill frontmatter 也可以定义随 skill 生命周期生效的 hook。
+
+本 plugin 这样使用这个模型:
+
+- `SessionStart` 仍是 command hook,因为官方文档说 `SessionStart` 支持 `command` 和 `mcp_tool`,不支持 `prompt`。
+- `Stop` 是 prompt hook,因为把当前 Claude session 路由到 skill 是语义判断。
+- `review-loop` 自己也定义 skill-scoped prompt Stop hook,防止闭环流程中途停止。
+
+不要新增执行 PR/review/merge 工作的 prompt hook 或 agent hook。非 command hook 可以路由或 guard;workflow 由 skill 执行。
+
+## Slash Commands
+
+| Command | 作用 |
 |---|---|
-| `/24hour-ClaudeCode:status` | 展示 state.json、last-run.json、current-pr.json 内容 |
-| `/24hour-ClaudeCode:retry` | 强制清 lock,手动触发一次 Stop hook |
-| `/24hour-ClaudeCode:setup` | 重跑 onboarder(Phase 0) |
-| `/24hour-ClaudeCode:enable` | 设 `config.enabled = true` |
-| `/24hour-ClaudeCode:disable` | 设 `config.enabled = false`(两个 hook 都静默) |
-| `/24hour-ClaudeCode:clear-lock` | 最后手段 —— 诊断后删 `<runtime>/lock` |
+| `/24hour-ClaudeCode:setup` | 调用 onboarding skill。 |
+| `/24hour-ClaudeCode:status` | 读取可见 review-loop state、git status 和当前 PR。 |
+| `/24hour-ClaudeCode:retry` | 修好根因后清除 `REVIEW_LOOP_STOPPED`。 |
+| `/24hour-ClaudeCode:disable` | 停止自动触发 review-loop。 |
+| `/24hour-ClaudeCode:enable` | 恢复自动触发 review-loop。 |
 
-主流程靠 hook 驱动。这些命令是逃生通道。
+## 验收检查
 
----
-
-## 可选:Superset workspace 集成
-
-上面的 Phase 0–5 是 **Claude Code 驱动**的流程。无论你用不用 [Superset](https://docs.superset.sh)(第三方多 worktree 管理工具),这些都照常运行。
-
-如果你的团队用 Superset 把 worktree 当 "workspace" 管理,plugin 提供一个**可选**集成,把自动 PR 闭环包起来。Superset 的生命周期 hook **和** Claude Code 的 hook 完全独立 —— 触发时机不同,职责不同。
-
-### 对比
-
-| 层 | 触发条件 | 作用域 | 做什么 |
-|---|---|---|---|
-| **Claude Code hook**(本 plugin) | session 启动 / 工具调用边界 / 回合边界 | 单次会话 | 驱动自动 PR 闭环(Phase 1–5) |
-| **Superset hook**(可选,第三方) | workspace 打开 / Run 按钮 / workspace 关闭 | worktree 生命周期 | 准备 worktree(依赖、环境)、启动 dev server、清理 |
-
-只在**打开 workspace** 时有交集 —— Superset 的 `setup.sh` 调用 `check-actions.sh` 验证自动 PR 闭环是否健康,然后用户才开始写代码。
-
-### Superset 的三个生命周期脚本
-
-通过 `bash scripts/install-superset-config.sh` 装好(每个 repo 一次)。位于 `<repo>/.superset/`:
-
-```
-用户打开 workspace ────────→ .superset/setup.sh
-                              ├─ 验证 worktree(git worktree list)
-                              ├─ 验证 plugin 装在 .claude/plugins/24hour-ClaudeCode/
-                              ├─ 验证 gh 已登录 + 有 workflow scope
-                              ├─ 验证 Claude Code Actions 已部署(调用 scripts/check-actions.sh)
-                              ├─ 初始化 <runtime>/ 目录(调用 runtime-state.sh init)
-                              ├─ 安装项目依赖(npm/pnpm/yarn/bun/pip/poetry/cargo/...)
-                              └─ 打印一屏命令小抄
-                              ⚠ 这里禁止:commit、push、开 PR、等 CI、auto-merge
-
-用户点 Run ─────────────────→ .superset/run.sh
-                              └─ 启动项目 dev server(项目特定;用户自定义)
-                              ⚠ 这里禁止:触发 PR 流程、读 CI、auto-merge
-
-用户关 workspace ─────────→ .superset/teardown.sh
-                              ├─ 清理 runtime lock + 临时决策文件
-                              └─ 提示用户:"PR 合入后,在 MAIN checkout 清理 worktree"
-                              ⚠ 这里禁止:关 PR、删远端分支、merge PR
-```
-
-### Superset 与自动 PR 闭环的交集
-
-```
-T+0       用户打开 Superset workspace
-          └─ Superset 跑 .superset/setup.sh(不是 Claude Code hook)
-             • check-actions.sh 验证 workflow YAML + secret
-             • runtime-state.sh init 创建 <runtime>/state.json(mode=idle)
-             • 打印命令小抄
-
-T+0:01    用户在该 workspace 起 Claude Code
-          └─ Claude Code 的 SessionStart hook 触发 bootstrap.sh(Phase 1)
-             • 读取 Superset setup.sh 刚刚初始化的同一个 <runtime>/
-             • 注入运行时契约;Claude 准备就绪
-
-          从这里开始,Phase 2–5 正常运行。Superset 不再介入,
-          除非用户点 Run(调 run.sh —— 与闭环独立)。
-
-T+稍后    用户关掉 workspace
-          └─ Superset 跑 .superset/teardown.sh(不是 Claude Code hook)
-             • 清 runtime lock,确保下次新建 workspace 起点干净
-```
-
-### 不用 Superset 怎么办
-
-完全一样。把上面 T+0 那一步换成:
-
-```
-T+0       用户跑: git worktree add ../my-feature -b feat/my-feature
-          用户跑: cd ../my-feature && claude
-          (依赖安装由用户自己负责。)
-```
-
-Claude Code 的 hook(Phase 1–5)运行方式完全相同。**Superset 集成只是给已经用 Superset 管理 worktree 的团队提供的便利层**,不是必需的。
-
-### 启用方式
+修改 runtime 后运行:
 
 ```bash
-# 在主 checkout 一次性运行:
-bash .claude/plugins/24hour-ClaudeCode/scripts/install-superset-config.sh
-git add .superset/ && git commit -m "Add Superset config" && git push
+bash -n hooks/*.sh scripts/*.sh templates/*.sh
+jq -e . hooks/hooks.json
+jq -e . .claude-plugin/plugin.json
+jq -e . templates/24hour-ClaudeCode.config.json
+bash scripts/install-superset-config.sh --verify
 ```
 
-之后,你的团队每次开 Superset workspace 都会自动跑上面三个脚本。验证:
+Stop 路由用 Claude Code `/hooks` 检查:
 
-```bash
-bash .claude/plugins/24hour-ClaudeCode/scripts/install-superset-config.sh --verify
-```
-
-完整说明、定制、排错见 `references/superset-integration.md`。
+- plugin `Stop` hook 类型是 `prompt`
+- `review-loop` skill frontmatter 定义了 `Stop` prompt hook
+- 没有 hook 指向 `hooks/stop.sh`、`hooks/goal-submit.sh` 或 `hooks/post-tool-use.sh`

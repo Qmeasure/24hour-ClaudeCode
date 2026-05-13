@@ -19,9 +19,49 @@ set -uo pipefail   # NOT -e: detection failures are normal; we always exit 0
 
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
+
+resolve_config_path() {
+  local local_config="$PROJECT_DIR/.claude/24hour-ClaudeCode.config.json"
+  [[ -f "$local_config" ]] && { printf '%s\n' "$local_config"; return; }
+
+  local git_dir git_common main_checkout main_config
+  git_dir=$(git -C "$PROJECT_DIR" rev-parse --git-dir 2>/dev/null || echo "")
+  git_common=$(git -C "$PROJECT_DIR" rev-parse --git-common-dir 2>/dev/null || echo "")
+  if [[ -n "$git_dir" && -n "$git_common" && "$git_dir" != "$git_common" ]]; then
+    main_checkout=$(git -C "$PROJECT_DIR" worktree list --porcelain 2>/dev/null \
+      | awk '/^worktree / {print $2; exit}')
+    if [[ -n "$main_checkout" && "$main_checkout" != "$PROJECT_DIR" ]]; then
+      main_config="$main_checkout/.claude/24hour-ClaudeCode.config.json"
+      [[ -f "$main_config" ]] && { printf '%s\n' "$main_config"; return; }
+    fi
+  fi
+
+  printf '%s\n' "$local_config"
+}
+
+is_protected_branch() {
+  local branch="$1" hardcoded=0 repo_nwo api_result
+  [[ -z "$branch" ]] && return 1
+
+  case "$branch" in
+    main|master|develop|dev|staging|production|release|prod|release/*|hotfix/*) hardcoded=1 ;;
+  esac
+
+  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+    repo_nwo=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || echo "")
+    if [[ -n "$repo_nwo" ]]; then
+      api_result=$(gh api "repos/$repo_nwo/branches/$branch" --jq '.protected' 2>/dev/null || echo "")
+      [[ "$api_result" == "true" ]] && return 0
+      [[ "$api_result" == "false" ]] && return 1
+    fi
+  fi
+
+  (( hardcoded == 1 ))
+}
+
 # Resolve config path — local first, falling back to main checkout when inside
 # a worktree, so worktrees inherit main's onboarded config without re-onboarding.
-CONFIG_FILE=$(CLAUDE_PROJECT_DIR="$PROJECT_DIR" bash "$PLUGIN_ROOT/scripts/resolve-config-path.sh" 2>/dev/null || echo "$PROJECT_DIR/.claude/24hour-ClaudeCode.config.json")
+CONFIG_FILE="$(resolve_config_path)"
 
 # ---- Helper: emit additionalContext JSON and exit ----
 emit() {
@@ -48,7 +88,7 @@ emit() {
 if [[ -f "$CONFIG_FILE" ]]; then
   enabled=$(jq -r '.enabled // true' "$CONFIG_FILE" 2>/dev/null || echo "true")
   if [[ "$enabled" == "false" ]]; then
-    emit "[24hour-ClaudeCode] Runtime is disabled for this project ($CONFIG_FILE has enabled=false). The Stop hook will not auto-commit or open PRs. Re-enable with /24hour-ClaudeCode:enable."
+    emit "[24hour-ClaudeCode] Runtime is disabled for this project ($CONFIG_FILE has enabled=false). The Stop hook will not trigger the review-loop skill. Re-enable with /24hour-ClaudeCode:enable."
   fi
 fi
 
@@ -65,22 +105,11 @@ if cd "$PROJECT_DIR" 2>/dev/null; then
 fi
 
 # Protected branch check (uses real GitHub branch protection when available;
-# falls back to hardcoded list when offline)
+# falls back to a conservative hardcoded list when offline)
 protected=0
 if (( in_worktree == 1 )); then
   branch=$(git -C "$PROJECT_DIR" branch --show-current 2>/dev/null || echo "")
-  if [[ -n "$branch" ]]; then
-    helper="$PLUGIN_ROOT/scripts/is-protected-branch.sh"
-    if [[ -x "$helper" ]]; then
-      [[ "$(CLAUDE_PROJECT_DIR="$PROJECT_DIR" bash "$helper" "$branch" 2>/dev/null)" == "true" ]] && protected=1
-    else
-      # Defense: if helper missing, use hardcoded list
-      case "$branch" in
-        main|master|develop|dev|staging|production|release|prod) protected=1 ;;
-        release/*|hotfix/*) protected=1 ;;
-      esac
-    fi
-  fi
+  [[ -n "$branch" ]] && is_protected_branch "$branch" && protected=1
 fi
 
 gh_ok=0
@@ -118,14 +147,14 @@ if (( gh_ok == 0 )) || (( actions_deployed == 0 )) || (( config_present == 0 ));
   if [[ -f "$onboarding_md" ]]; then
     onboarding_body=$(cat "$onboarding_md")
   else
-    onboarding_body="(Onboarding skill not yet installed; see plugin scripts/configure-actions.sh.)"
+    onboarding_body="(Onboarding skill not yet installed; install or restore skills/github-actions-onboarding/SKILL.md.)"
   fi
 
   # Context-aware location hint: setup must run on main checkout so workflow
   # YAMLs land on the default branch first. Tell the user where they are and
   # what to do next.
   if (( in_worktree == 1 )); then
-    location_hint="You are currently inside a git worktree. Setup should be run from the **main checkout** so the workflow YAMLs are committed directly to the default branch (GitHub Actions can't authorize tokens until \`.github/workflows/claude*.yml\` exists on the default branch). Switch to your main checkout and run \`/24hour-ClaudeCode:setup\` there. If you must onboard from this worktree, your first PR will carry the workflow YAML changes and the runtime will auto-split them into a preflight PR — extra round-trip but it works."
+    location_hint="You are currently inside a git worktree. Setup should be run from the **main checkout** so the workflow YAMLs are committed directly to the default branch (GitHub Actions can't authorize tokens until \`.github/workflows/claude*.yml\` exists on the default branch). Switch to your main checkout and run \`/24hour-ClaudeCode:setup\` there before feature work."
   else
     location_hint="You are on the main checkout — this is the correct place to run setup. Run \`/24hour-ClaudeCode:setup\` now to complete onboarding before creating any worktree."
   fi
@@ -170,24 +199,18 @@ runtime_body=$(cat "$runtime_md")
 runtime_dir="$PROJECT_DIR/.claude/runtime/24hour-ClaudeCode"
 mkdir -p "$runtime_dir" 2>/dev/null || true
 
-# Write a gitignore inside the runtime dir so it never leaks into diffs
-[[ ! -f "$runtime_dir/.gitignore" ]] && echo '*' > "$runtime_dir/.gitignore" 2>/dev/null
+# Write a gitignore inside the runtime dir so state never leaks into diffs,
+# while the sentinel .gitignore itself remains trackable during onboarding.
+printf '*\n!.gitignore\n' > "$runtime_dir/.gitignore" 2>/dev/null || true
 
-state_file="$runtime_dir/state.json"
-if [[ ! -f "$state_file" ]]; then
-  branch=$(git -C "$PROJECT_DIR" branch --show-current 2>/dev/null || echo "")
-  worktree_path="$PROJECT_DIR"
-  repo_nwo=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || echo "")
-  jq -n --arg repo "$repo_nwo" --arg wt "$worktree_path" --arg br "$branch" \
-     '{enabled:true, repo:$repo, worktree:$wt, branch:$br, pr_number:null, iteration:0, max_iterations:5, mode:"idle", last_status:"ready"}' \
-     > "$state_file" 2>/dev/null || true
-fi
+branch=$(git -C "$PROJECT_DIR" branch --show-current 2>/dev/null || echo "")
+repo_nwo=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || echo "")
 
 payload=$(cat <<EOF
 <EXTREMELY-IMPORTANT>
 The 24hour-ClaudeCode auto-PR-loop runtime is ACTIVE in this worktree.
 
-Read the runtime contract below. Prefer Claude Code /goal mode for feature work. The Stop hook owns commit, push, PR creation, current-SHA review waiting, rework feedback, and auto-merge. Do not manually commit, push, or open PRs unless the hook explicitly stops and asks for human action.
+Read the runtime contract below. Prefer Claude Code /goal mode for feature work. The Stop hook is only a thin trigger; when it emits REVIEW_LOOP_CONTINUE, use the review-loop skill.
 
 Repo: ${repo_nwo:-<unknown>}
 Branch: ${branch:-<unknown>}

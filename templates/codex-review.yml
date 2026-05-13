@@ -1,6 +1,4 @@
-# ⚠️ STATIC FALLBACK TEMPLATE for Codex review
-# Used by `bash scripts/configure-actions.sh --static-templates` when Codex is the chosen provider.
-# Default render path: scripts/render-workflows.sh writes a project-tailored version.
+# Default static Codex review workflow template.
 #
 # Reference: https://github.com/openai/codex-action
 
@@ -9,10 +7,6 @@ name: Codex Review
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-    paths-ignore:
-      - "**.md"
-      - "**/CHANGELOG*"
-      - "**/*.lock"
 
 concurrency:
   group: codex-review-${{ github.event.pull_request.number }}
@@ -49,9 +43,7 @@ jobs:
           prompt: |
             Review PR ${{ github.repository }}/pull/${{ github.event.pull_request.number }}.
 
-            This is the STATIC FALLBACK template (no project tailoring). Use
-            scripts/render-workflows.sh for a project-specific prompt baked in
-            at render time. Until then, apply general best practices:
+            This is the default static template. Apply general best practices:
             - Cite file:line for every issue.
             - Group findings by severity: Reject / Major / Minor / Nit.
             - Skip trivial nits; lead with structural concerns.

@@ -1,11 +1,12 @@
 {
   "name": "24hour-ClaudeCode",
+  "description": "Qmeasure Claude Code plugins",
   "owner": {"name": "Qmeasure"},
   "plugins": [
     {
       "name": "24hour-ClaudeCode",
       "source": "./",
-      "description": "Goal-aware Auto-PR loop runtime for git worktrees"
+      "description": "Goal-aware skill-first Auto-PR loop runtime for git worktrees"
     }
   ]
 }

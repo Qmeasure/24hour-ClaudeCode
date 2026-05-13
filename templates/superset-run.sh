@@ -4,7 +4,7 @@
 # Replace this with your project's actual dev-server / run command.
 # This stub auto-detects common patterns; edit to fit.
 #
-# FORBIDDEN here (do these in stop.sh / babysit-pr skill instead):
+# FORBIDDEN here (do these in review-loop skill instead):
 #   - trigger PR flow
 #   - read CI / review feedback
 #   - auto-merge

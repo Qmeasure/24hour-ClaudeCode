@@ -4,18 +4,19 @@
 # What this does:
 #   default mode: copy templates/superset-config.json → .superset/config.json
 #                 and templates/superset-{setup,run,teardown}.sh → .superset/,
-#                 then print explicit activation steps (commit, register repo, verify).
+#                 then print explicit activation steps (commit from the normal
+#                 workflow, register repo, verify).
 #   --verify    : check whether activation is complete (config + hook scripts
-#                 exist, setup delegates to check-actions.sh, files are committed).
+#                 exist and files are committed).
 #                 Returns non-zero on issues.
-#   --uninstall : delete .superset/config.json (with confirmation).
+#   --uninstall : delete .superset/config.json only when --force is also passed.
 #
 # Usage:
-#   bash scripts/install-superset-config.sh                # interactive install
+#   bash scripts/install-superset-config.sh                # install missing files, keep existing
 #   bash scripts/install-superset-config.sh --force        # overwrite without asking
 #   bash scripts/install-superset-config.sh --local        # write to config.local.json (gitignored)
 #   bash scripts/install-superset-config.sh --verify       # check current state
-#   bash scripts/install-superset-config.sh --uninstall    # remove
+#   bash scripts/install-superset-config.sh --uninstall --force  # remove
 
 set -euo pipefail
 
@@ -23,7 +24,6 @@ FORCE=0
 LOCAL=0
 VERIFY=0
 UNINSTALL=0
-NONINTERACTIVE=0
 
 for arg in "$@"; do
   case "$arg" in
@@ -31,7 +31,7 @@ for arg in "$@"; do
     --local) LOCAL=1 ;;
     --verify) VERIFY=1 ;;
     --uninstall) UNINSTALL=1 ;;
-    --noninteractive|-y) NONINTERACTIVE=1 ;;
+    --noninteractive|-y) ;; # retained as a no-op for older docs/commands
     -h|--help) sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "Unknown: $arg" >&2; exit 1 ;;
   esac
@@ -41,14 +41,6 @@ say()  { printf "\033[1;36m▸\033[0m %s\n" "$*"; }
 ok()   { printf "\033[1;32m✓\033[0m %s\n" "$*"; }
 warn() { printf "\033[1;33m⚠\033[0m %s\n" "$*" >&2; }
 err()  { printf "\033[1;31m✗\033[0m %s\n" "$*" >&2; exit 1; }
-
-ask() {
-  local prompt="$1" default="${2:-y}"
-  if (( NONINTERACTIVE == 1 )); then echo "$default"; return; fi
-  local reply
-  read -r -p "$(printf '\033[1;35m?\033[0m %s [%s]: ' "$prompt" "$default")" reply
-  echo "${reply:-$default}"
-}
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEMPLATE="$SCRIPT_DIR/../templates/superset-config.json"
@@ -68,8 +60,7 @@ if (( UNINSTALL == 1 )); then
     warn "$TARGET not found; nothing to uninstall"
     exit 0
   fi
-  reply="$(ask "Delete $TARGET?" "n")"
-  [[ "$reply" =~ ^[Yy] ]] || err "Aborted"
+  (( FORCE == 1 )) || err "Refusing to delete $TARGET without --force"
   rm -f "$TARGET"
   ok "Removed $TARGET"
   echo ""
@@ -123,23 +114,7 @@ if (( VERIFY == 1 )); then
     fi
   done
 
-  # 4. setup.sh delegates the real Actions health check to the plugin script.
-  if grep -q 'check-actions.sh' ".superset/setup.sh" 2>/dev/null; then
-    ok "setup.sh references scripts/check-actions.sh"
-  else
-    warn "setup.sh does not reference check-actions.sh"
-    WARN_COUNT=$((WARN_COUNT+1))
-  fi
-
-  # 5. check-actions.sh exists
-  if [[ -x "$SCRIPT_DIR/check-actions.sh" ]]; then
-    ok "scripts/check-actions.sh exists and is executable"
-  else
-    warn "scripts/check-actions.sh missing or not executable (skill installation incomplete?)"
-    WARN_COUNT=$((WARN_COUNT+1))
-  fi
-
-  # 6. Committed?
+  # 4. Committed?
   if (( LOCAL == 0 )); then
     for tracked_path in "$TARGET" "${HOOK_PATHS[@]}"; do
       if git ls-files --error-unmatch "$tracked_path" >/dev/null 2>&1; then
@@ -188,17 +163,7 @@ if [[ -f "$TARGET" ]]; then
     cp "$TEMPLATE" "$TARGET"
     ok "Force-overwrote $TARGET"
   else
-    warn "$TARGET already exists"
-    echo ""
-    echo "  Compare with template:"
-    diff -u "$TARGET" "$TEMPLATE" || true
-    echo ""
-    reply="$(ask "Overwrite? (y) / Skip (n) / Save template alongside (s)" "n")"
-    case "$reply" in
-      y|Y) cp "$TEMPLATE" "$TARGET"; ok "Overwrote $TARGET" ;;
-      s|S) cp "$TEMPLATE" ".superset/config.template.json"; ok "Saved template to .superset/config.template.json" ;;
-      *) ok "Kept existing $TARGET" ;;
-    esac
+    ok "Kept existing $TARGET (use --force to overwrite)"
   fi
 else
   cp "$TEMPLATE" "$TARGET"
@@ -242,7 +207,8 @@ echo ""
 say "✅ Config file in place. Now activate it (3 steps):"
 echo ""
 
-# Step 1: commit + push (only for shared config)
+# Step 1: commit + push guidance (only for shared config). This script does not
+# run git add/commit/push; committing belongs to the caller's workflow.
 if (( LOCAL == 0 )); then
   echo "  ─── Step 1: commit + push (so teammates get this config) ───"
   all_shared_clean=1
@@ -259,18 +225,7 @@ if (( LOCAL == 0 )); then
     echo "    git commit -m 'Add Superset workspace config'"
     echo "    git push"
     echo ""
-    reply="$(ask "Run the three commands above now?" "y")"
-    if [[ "$reply" =~ ^[Yy] ]]; then
-      git add "$TARGET" "${HOOK_PATHS[@]}"
-      if git diff --cached --quiet; then
-        warn "Nothing staged (already committed?)"
-      else
-        git commit -m "Add Superset workspace config"
-        git push 2>/dev/null && ok "Pushed" || warn "Push failed (no upstream?). Run 'git push -u origin <branch>' manually"
-      fi
-    else
-      warn "Don't forget to commit + push before teammates can use this."
-    fi
+    warn "Commit and push from the surrounding skill or your normal git workflow."
   fi
 else
   echo "  ─── Step 1: skipped (this is a local config, not for the team) ───"
@@ -317,5 +272,5 @@ echo ""
 # Final next-step pointer
 say "Done. Skill is now Superset-integrated."
 echo ""
-echo "  → Full integration details: references/superset-integration.md"
-echo "  → 9-step PR flow:           SKILL.md"
+echo "  → Beginner setup flow:      README.md"
+echo "  → Review-loop workflow:     skills/review-loop/SKILL.md"
