@@ -7,7 +7,8 @@
 #                 then print explicit activation steps (commit from the normal
 #                 workflow, register repo, verify).
 #   --verify    : check whether activation is complete (config + hook scripts
-#                 exist and files are committed).
+#                 exist, setup uses current plugin detection, and files are
+#                 committed).
 #                 Returns non-zero on issues.
 #   --uninstall : delete .superset/config.json only when --force is also passed.
 #
@@ -114,7 +115,25 @@ if (( VERIFY == 1 )); then
     fi
   done
 
-  # 4. Committed?
+  # 4. setup.sh must use current marketplace plugin detection and must not
+  # reference the removed script-heavy runtime.
+  if [[ -f ".superset/setup.sh" ]]; then
+    if grep -qE '\.claude/plugins/24hour-ClaudeCode|scripts/check-actions\.sh|PLUGIN_DIR=' ".superset/setup.sh"; then
+      warn ".superset/setup.sh contains stale project-local plugin path or removed check-actions.sh references"
+      WARN_COUNT=$((WARN_COUNT+1))
+    else
+      ok ".superset/setup.sh has no stale project-local plugin or check-actions references"
+    fi
+
+    if grep -qF 'claude plugin list' ".superset/setup.sh"; then
+      ok ".superset/setup.sh checks installed plugin state through Claude Code"
+    else
+      warn ".superset/setup.sh does not verify plugin state through 'claude plugin list'"
+      WARN_COUNT=$((WARN_COUNT+1))
+    fi
+  fi
+
+  # 5. Committed?
   if (( LOCAL == 0 )); then
     for tracked_path in "$TARGET" "${HOOK_PATHS[@]}"; do
       if git ls-files --error-unmatch "$tracked_path" >/dev/null 2>&1; then
@@ -130,7 +149,7 @@ if (( VERIFY == 1 )); then
     done
   fi
 
-  # 7. Superset CLI presence
+  # 6. Superset CLI presence
   if command -v superset >/dev/null 2>&1; then
     ok "Superset CLI is installed: $(command -v superset)"
   else

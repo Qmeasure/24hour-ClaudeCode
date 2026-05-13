@@ -66,6 +66,32 @@ The successful `/Users/lesterbot/Downloads/claude-test2` review-loop pattern is 
 - Keep unrelated rationale, history, implementation commentary, JSON protocol details, and fallback narratives out of the hook prompt.
 - Onboarding must add `.Claude/` to the project root `.gitignore`. Do not add `.claude/` there, because onboarding intentionally commits `.claude/24hour-ClaudeCode.config.json` and `.claude/runtime/24hour-ClaudeCode/.gitignore`.
 
+## Version Bump Rule
+
+Any change that should reach installed plugin users must bump `.claude-plugin/plugin.json` before push. Claude Code plugin updates are version-gated; if the version stays unchanged, users can keep running the old cached plugin even after `main` changes.
+
+Use:
+
+```bash
+bash scripts/bump-version.sh patch
+```
+
+Run the bump in the same change as hook, skill, command, template, onboarding, runtime, or user-facing docs changes that alter behavior. Verify with `claude plugin validate .` before pushing.
+
+## Superset Integration Rules
+
+Superset workspace scripts run inside user project worktrees, not inside the plugin hook environment. Do not rely on `${CLAUDE_PLUGIN_ROOT}` or project-local `.claude/plugins/24hour-ClaudeCode` paths there.
+
+`.superset/setup.sh` must verify plugin installation through Claude Code itself:
+
+```bash
+claude plugin list
+```
+
+The setup script must not call removed runtime helpers such as `scripts/check-actions.sh`, and must not print maintenance commands pointing at plugin-internal scripts. It may point users to slash commands such as `/24hour-ClaudeCode:status`, `/24hour-ClaudeCode:retry`, `/24hour-ClaudeCode:setup`, and `claude plugin details 24hour-ClaudeCode@24hour-ClaudeCode`.
+
+When changing Superset templates, validate with a temporary repo install plus `bash scripts/install-superset-config.sh --verify`; the verifier should catch stale `.superset/setup.sh` copies that still reference project-local plugin paths or removed scripts.
+
 ## Official Hook Facts
 
 - Verify Claude Code hook behavior against the official docs or local `claude --help` before changing runtime architecture.

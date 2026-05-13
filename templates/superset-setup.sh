@@ -5,7 +5,7 @@
 # Edit freely; this script is opinionated by default but yours to own.
 #
 # Responsibilities:
-#   - Verify worktree + plugin presence
+#   - Verify worktree + marketplace plugin presence
 #   - Verify gh CLI auth + workflow scope
 #   - Verify Claude Code Actions workflow YML(s) present
 #   - Initialize .claude/runtime/24hour-ClaudeCode/
@@ -19,16 +19,29 @@
 
 set -uo pipefail
 
-ROOT="${SUPERSET_ROOT_PATH:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
-WS_NAME="${SUPERSET_WORKSPACE_NAME:-$(git branch --show-current 2>/dev/null || echo unnamed)}"
-WS_PATH="${SUPERSET_WORKSPACE_PATH:-$(pwd)}"
+PWD_PATH="$(pwd)"
+ENV_ROOT="${SUPERSET_ROOT_PATH:-}"
+ENV_WS_NAME="${SUPERSET_WORKSPACE_NAME:-}"
+ENV_WS_PATH="${SUPERSET_WORKSPACE_PATH:-}"
+
+# Ignore stale Superset env vars when this script is triggered manually from a
+# different checkout than the workspace path recorded in the environment.
+if [[ -n "$ENV_WS_PATH" && "$ENV_WS_PATH" != "$PWD_PATH" ]]; then
+  ENV_ROOT=""
+  ENV_WS_NAME=""
+  ENV_WS_PATH=""
+fi
+
+ROOT="${ENV_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+WS_NAME="${ENV_WS_NAME:-$(git branch --show-current 2>/dev/null || echo unnamed)}"
+WS_PATH="${ENV_WS_PATH:-$PWD_PATH}"
 
 bold()  { printf "\033[1m%s\033[0m" "$*"; }
 ok()    { printf "\033[1;32m✓\033[0m %s\n" "$*"; }
 warn()  { printf "\033[1;33m⚠\033[0m %s\n" "$*" >&2; }
 info()  { printf "\033[1;36mℹ\033[0m %s\n" "$*"; }
 
-PLUGIN_DIR="$ROOT/.claude/plugins/24hour-ClaudeCode"
+PLUGIN_REF="24hour-ClaudeCode@24hour-ClaudeCode"
 
 echo ""
 echo "╭─────────────────────────────────────────────────────────────────────╮"
@@ -47,11 +60,19 @@ if [[ -z "$git_dir" || "$git_dir" == "$git_common" ]]; then
 fi
 
 # ---- 2. Plugin presence ----
-if [[ -d "$PLUGIN_DIR" ]]; then
-  ok "Plugin installed at $PLUGIN_DIR"
+if ! command -v claude >/dev/null 2>&1; then
+  warn "Claude Code CLI not found. Install Claude Code, then install the plugin."
+  echo "      Install: claude plugin install $PLUGIN_REF"
+elif claude plugin list 2>/dev/null | awk -v plugin="$PLUGIN_REF" '
+  $0 ~ plugin { seen = 1 }
+  seen && /Status:[[:space:]]*.*enabled/ { enabled = 1 }
+  seen && /^$/ { seen = 0 }
+  END { exit enabled ? 0 : 1 }
+'; then
+  ok "24hour-ClaudeCode plugin installed and enabled ($PLUGIN_REF)"
 else
-  warn "24hour-ClaudeCode plugin NOT installed."
-  echo "      Install: /plugin install 24hour-ClaudeCode (see plugin docs)"
+  warn "24hour-ClaudeCode plugin is not enabled in Claude Code."
+  echo "      Run: claude plugin install $PLUGIN_REF"
 fi
 
 # ---- 3. gh CLI ----
@@ -116,6 +137,7 @@ $(bold 'Start coding:')
 $(bold 'Maintenance commands:')
   /24hour-ClaudeCode:status
   /24hour-ClaudeCode:retry        # clear stopped review-loop state
+  claude plugin list              # verify plugin install status
 
 $(bold 'When done — clean up worktree (run from MAIN checkout):')
   cd $ROOT
@@ -123,7 +145,7 @@ $(bold 'When done — clean up worktree (run from MAIN checkout):')
   git branch -d $WS_NAME
 
 $(bold 'Help:')
-  $PLUGIN_DIR/skills/using-24hour-ClaudeCode/SKILL.md — runtime contract
-  $PLUGIN_DIR/README.md     — overview
+  claude plugin details $PLUGIN_REF
+  /24hour-ClaudeCode:setup        # re-run onboarding if repo wiring drifts
 EOF
 echo ""
