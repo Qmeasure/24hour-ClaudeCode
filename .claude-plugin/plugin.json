@@ -1,7 +1,7 @@
 {
   "name": "24hour-ClaudeCode",
   "description": "Goal-aware skill-first Auto-PR loop runtime: use native /goal in a worktree, then a prompt-based Stop hook routes the current Claude Code session to the review-loop skill for commit/push/PR, GitHub Claude Code Action review, rework, and merge.",
-  "version": "1.0.17",
+  "version": "1.0.18",
   "author": {
     "name": "Qmeasure"
   },

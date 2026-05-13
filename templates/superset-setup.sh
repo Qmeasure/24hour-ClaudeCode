@@ -42,6 +42,7 @@ warn()  { printf "\033[1;33m⚠\033[0m %s\n" "$*" >&2; }
 info()  { printf "\033[1;36mℹ\033[0m %s\n" "$*"; }
 
 PLUGIN_REF="24hour-ClaudeCode@24hour-ClaudeCode"
+IS_LINKED_WORKTREE=0
 
 echo ""
 echo "╭─────────────────────────────────────────────────────────────────────╮"
@@ -57,6 +58,8 @@ git_common=$(git rev-parse --git-common-dir 2>/dev/null || echo "")
 if [[ -z "$git_dir" || "$git_dir" == "$git_common" ]]; then
   warn "Not in a git worktree (this looks like the main checkout)."
   echo "      Open a worktree first: git worktree add ../my-feature -b feat/my-feature"
+else
+  IS_LINKED_WORKTREE=1
 fi
 
 # ---- 2. Plugin presence ----
@@ -138,12 +141,23 @@ $(bold 'Maintenance commands:')
   /24hour-ClaudeCode:status
   /24hour-ClaudeCode:retry        # clear stopped review-loop state
   claude plugin list              # verify plugin install status
+EOF
 
+if (( IS_LINKED_WORKTREE == 1 )); then
+  cat <<EOF
 $(bold 'When done — clean up worktree (run from MAIN checkout):')
   cd $ROOT
   git worktree remove $WS_PATH
   git branch -d $WS_NAME
+EOF
+else
+  cat <<EOF
+$(bold 'Worktree cleanup:')
+  This checkout is not a linked Superset worktree; no cleanup command is needed here.
+EOF
+fi
 
+cat <<EOF
 $(bold 'Help:')
   claude plugin details $PLUGIN_REF
   /24hour-ClaudeCode:setup        # re-run onboarding if repo wiring drifts
