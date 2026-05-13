@@ -179,7 +179,7 @@ fi
 
 # Branch B: onboarded but not in a worktree → dormant
 if (( in_worktree == 0 )); then
-  emit "[24hour-ClaudeCode] Dormant: not running inside a git worktree. The runtime engages only when you enter a worktree (\`git worktree add ../my-feature -b feat/my-feature\`)."
+  emit "[24hour-ClaudeCode] Dormant: not running inside a git worktree. The runtime engages only when you enter a worktree created from the latest remote default branch (\`git fetch origin --prune && git worktree add ../my-feature -b feat/my-feature origin/<default-branch>\`)."
 fi
 
 # Branch C: protected branch → dormant
@@ -194,14 +194,6 @@ if [[ ! -f "$runtime_md" ]]; then
 fi
 
 runtime_body=$(cat "$runtime_md")
-
-# Initialize runtime state directory if absent
-runtime_dir="$PROJECT_DIR/.claude/runtime/24hour-ClaudeCode"
-mkdir -p "$runtime_dir" 2>/dev/null || true
-
-# Write a gitignore inside the runtime dir so state never leaks into diffs,
-# while the sentinel .gitignore itself remains trackable during onboarding.
-printf '*\n!.gitignore\n' > "$runtime_dir/.gitignore" 2>/dev/null || true
 
 branch=$(git -C "$PROJECT_DIR" branch --show-current 2>/dev/null || echo "")
 repo_nwo=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || echo "")

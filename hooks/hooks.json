@@ -20,7 +20,7 @@
         "hooks": [
           {
             "type": "prompt",
-            "prompt": "Use the `review-loop` skill via the Skill tool.\n\nExecute the complete 24hour-ClaudeCode PR review loop in the current Claude Code session and current WorkTree.\n\nPreflight git, worktree, GitHub auth, and runtime config. Prove reviewable changes exist. Inspect the diff and scan for secrets. Run configured checks. Commit. Push. Bind CURRENT_HEAD_SHA. Create or refresh the PR. Wait for the current-SHA GitHub Claude Code Action review workflow. Read top-level and inline review output. Fix blocking security and correctness findings. Repeat until convergence. Merge or enable auto-merge. Write REVIEW_LOOP_DONE or REVIEW_LOOP_STOPPED.",
+            "prompt": "Use the `review-loop` skill via the Skill tool.\n\nExecute the complete 24hour-ClaudeCode PR review loop in the current Claude Code session and current WorkTree.\n\nPreflight git, worktree, GitHub auth, runtime config, and origin/default-branch freshness. Prove reviewable changes exist. Inspect the diff and scan for secrets. Run configured checks. Commit. Push. Bind CURRENT_HEAD_SHA in the current context. Create or refresh the PR. Wait for the current-SHA GitHub Claude Code Action review workflow. Read top-level and inline review output. Fix blocking security and correctness findings. Repeat until convergence. Merge or enable auto-merge, or report a concrete blocker.",
             "model": "claude-opus-4-7",
             "timeout": 7200,
             "continueOnBlock": true,

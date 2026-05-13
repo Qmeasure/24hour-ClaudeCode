@@ -73,7 +73,7 @@ Runtime 遵循一组 skill-first 原则:
 
 ## 快速开始
 
-整个流程**就 3 步**:每台机器一次、每个 repo 一次、每个 feature 一次。配好以后,你每开发一个新 feature,只要 `git worktree add` 一下,后面 PR 全自动跑完。
+整个流程**就 3 步**:每台机器一次、每个 repo 一次、每个 feature 一次。配好以后,你每开发一个新 feature,只要从 `origin/<默认分支>` 创建 worktree,后面 PR 全自动跑完。
 
 ```
 第 1 步(每台机器一次)→ 安装 plugin            ─┐  任意终端、任意目录
@@ -180,11 +180,18 @@ Onboarding 完成后,**在 GitHub 网页上做一件事**:打开你的 repo → 
 
 ```bash
 # 还在 ~/Projects/my-app(你的主目录)里:
-git worktree add ../my-feature -b feat/my-feature
-#                ↑ 创建 ~/Projects/my-feature,新分支
+git fetch origin --prune
+git worktree add ../my-feature -b feat/my-feature origin/main
+#                                                 ↑ 换成 origin/<你的默认分支>
 
 cd ../my-feature      # 进 worktree 目录
 claude                # ← 在这里开新 Claude session(不要复用主目录那个)
+```
+
+如果默认分支不是 `main`,先查默认分支名:
+
+```bash
+gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name'
 ```
 
 > 🔑 **关键:** 必须在 worktree 目录**重新开** Claude Code session。SessionStart hook 一个会话只跑一次,所以 plugin 的 runtime 只在 Claude 在 worktree 目录"启动时"才会激活。如果你只是把已有 session `cd` 过来,runtime 不会生效。
@@ -192,6 +199,7 @@ claude                # ← 在这里开新 Claude session(不要复用主目录
 Claude 在 `../my-feature` 里启动后,plugin 自动检测:
 - ✓ 在 worktree 里
 - ✓ main 已 onboard(配置自动继承)
+- ✓ 当前分支包含最新 `origin/<default-branch>`
 - → **当前 worktree 的 runtime 已激活**,不需要重做 setup。
 
 让 Claude 开始干活。**推荐方式:** 用 Claude Code `/goal` 模式,这样 plugin 会等到目标真正完成后才发 PR:
@@ -207,7 +215,7 @@ Plugin 会接管后续流程:
 - 原生 `/goal` 达成后,或非 Goal 回合在实现后准备停止时,Stop prompt 会让同一个 Claude 会话继续,并要求它使用 `review-loop` skill
 - `review-loop` skill 负责 commit、push、创建或更新 PR,并等待 GitHub Claude Code Action review
 - PR 自动进入 review(Claude 或 Codex,看你之前选的)
-- 如果 Claude Code Action review 失败,plugin 把具体反馈喂给 Claude,Claude 自动改 —— 最多重试 5 轮。外部 CI 默认不生成、不要求,除非你显式设置 `github.require_external_ci=true`。
+- 如果 Claude Code Action review 失败,plugin 把具体反馈喂给 Claude,Claude 在同一个 session 里继续改。外部 CI 默认不生成、不要求,除非你显式设置 `github.require_external_ci=true`。
 - 全绿了,plugin 开启 auto-merge,等 PR 合并
 - 完事。从「在报表页加个 CSV 导出」到「PR 已合并」,整个过程不用敲 `git`,不用点 "merge"。
 
@@ -229,7 +237,7 @@ git worktree remove ../my-feature     # 删 worktree
 不会。`review-loop` skill 只 commit 当前任务需要的文件。`migrations/`、`.env.production`、`infra/`、`**/secrets/**` 这些敏感路径默认在 `danger_paths` 里,提交前必须格外小心并确认有明确授权。
 
 **审核要是一直失败怎么办?**
-最多自动改 5 轮。还过不去就会自动停下来告诉你哪里有问题,你接手处理。
+当 review 证据缺失、过期、含糊,或需要人判断时,它会报告明确 blocker,然后你接手处理。
 
 **我想手改一下文件,但不想启动 review loop,怎么办?**
 两个选项:
@@ -240,7 +248,7 @@ git worktree remove ../my-feature     # 删 worktree
 不会。它拒绝 push 到 `main` / `master` / `develop` / `staging` 这种受保护的分支。必须切到 feature 分支才会动。
 
 **怎么看它现在在干啥?**
-跑 `/24hour-ClaudeCode:status`,会展示 review-loop 状态、git status,以及当前分支的 PR。
+跑 `/24hour-ClaudeCode:status`,会展示 git sync、config 状态,以及当前分支的 PR。
 
 **自动审核太严 / 太松,能调吗?**
 能。review prompt **直接写在 workflow YAML 里**。改 `.github/workflows/claude-code-review.yml`(以及 `codex-review.yml` 如果用 Codex)的 `prompt:` 块,commit、push,下个 PR 自动生效,不需要重 setup。
@@ -264,9 +272,9 @@ claude plugin update 24hour-ClaudeCode@24hour-ClaudeCode  # 安装最新版本
 
 | 现象 | 怎么办 |
 |---|---|
-| "它好像卡住了" | 跑 `/24hour-ClaudeCode:status`。如果已经安全停止,先修根因,再用 `/24hour-ClaudeCode:retry` 清掉 stopped 状态 |
+| "它好像卡住了" | 跑 `/24hour-ClaudeCode:status`,看 git sync、当前 PR,以及分支是否落后 `origin/<default-branch>` |
 | "它推不上代码" | 检查 `gh auth status`,需要的话重新登录 |
-| "它说闭环达到上限了" | plugin 试了 5 次都没让 review 通过。看它的提示信息,自己接手修 |
+| "它报告 blocker" | 看 blocker,修根因,然后在同一个 worktree 继续 |
 | "审核没跑起来" | 确认 GitHub 上的 "Claude" App 装到了你的 repo,且 `CLAUDE_CODE_OAUTH_TOKEN` 这个 secret 存在。重跑 `/24hour-ClaudeCode:setup` 即可 |
 | "我想从头来过" | `/24hour-ClaudeCode:setup` 重跑是安全的 —— 不会破坏已有配置 |
 
@@ -288,7 +296,7 @@ your-project/
 | 你想要的 | 怎么改 |
 |---|---|
 | 让审核机器人专注某个方面(比如只审安全) | 改 `.github/workflows/claude-code-review.yml` 的 `prompt:` 块 |
-| 多给几次重试机会再放弃 | 配置文件里调 `repair.max_iterations`(默认 5) |
+| 调整 review 等待时间 | 配置文件里调 `repair.review_loop_timeout` |
 | 加一个路径"提交前必须格外小心" | 配置文件 `danger_paths` 数组里加上 glob |
 | commit 前不跑测试(更快但风险大) | 配置文件 `checks.run_local_tests` 改成 `false` |
 
@@ -302,7 +310,6 @@ your-project/
 |---|---|
 | `/24hour-ClaudeCode:setup` | 调用 onboarding skill |
 | `/24hour-ClaudeCode:status` | 看现在在干什么 |
-| `/24hour-ClaudeCode:retry` | 修好根因后清除 stopped 状态 |
 | `/24hour-ClaudeCode:disable` | 暂停 plugin |
 | `/24hour-ClaudeCode:enable` | 暂停后恢复 |
 

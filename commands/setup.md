@@ -12,6 +12,6 @@ Do not run a monolithic onboarding script. Use scripts only for deterministic me
 
 After onboarding succeeds, tell the user:
 
-> "Setup complete. The auto-PR loop is now active for this repo. Open a worktree (`git worktree add ../my-feature -b feat/my-feature`), start a fresh Claude Code session inside it, and use `/goal <your objective>` for feature work. After native `/goal` allows stopping, the Stop prompt can route to the review-loop skill.
+> "Setup complete. The auto-PR loop is now active for this repo. Open a worktree from latest origin (`git fetch origin --prune && git worktree add ../my-feature -b feat/my-feature origin/<default-branch>`), start a fresh Claude Code session inside it, and use `/goal <your objective>` for feature work. After native `/goal` allows stopping, the Stop prompt can route to the review-loop skill.
 >
-> To verify: run `/24hour-ClaudeCode:status` for runtime state, or `/clear` to re-trigger SessionStart and see the runtime contract injected."
+> To verify: run `/24hour-ClaudeCode:status` for git sync and PR status, or `/clear` to re-trigger SessionStart and see the runtime contract injected."

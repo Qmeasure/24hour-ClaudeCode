@@ -133,7 +133,7 @@ For Codex review, also or instead install:
 cp "${CLAUDE_PLUGIN_ROOT}/templates/codex-review.yml" .github/workflows/codex-review.yml
 ```
 
-## Seed Config And Runtime
+## Seed Config
 
 Create the config only if it is missing:
 
@@ -145,14 +145,11 @@ if [ ! -f "$PROJECT_DIR/.claude/24hour-ClaudeCode.config.json" ]; then
   cp "${CLAUDE_PLUGIN_ROOT}/templates/24hour-ClaudeCode.config.json" "$PROJECT_DIR/.claude/24hour-ClaudeCode.config.json"
 fi
 
-mkdir -p "$PROJECT_DIR/.claude/runtime/24hour-ClaudeCode"
-printf '*\n!.gitignore\n' > "$PROJECT_DIR/.claude/runtime/24hour-ClaudeCode/.gitignore"
-
 touch "$PROJECT_DIR/.gitignore"
 grep -qxF '.Claude/' "$PROJECT_DIR/.gitignore" || printf '\n.Claude/\n' >> "$PROJECT_DIR/.gitignore"
 ```
 
-Do not add `.claude/` to the project root `.gitignore`; onboarding intentionally commits `.claude/24hour-ClaudeCode.config.json` and `.claude/runtime/24hour-ClaudeCode/.gitignore`.
+Do not add `.claude/` to the project root `.gitignore`; onboarding intentionally commits `.claude/24hour-ClaudeCode.config.json`.
 
 ## Commit And Push
 
@@ -166,7 +163,7 @@ git diff -- .github/workflows .claude/24hour-ClaudeCode.config.json .gitignore
 Commit only onboarding files:
 
 ```bash
-git add .github/workflows .claude/24hour-ClaudeCode.config.json .claude/runtime/24hour-ClaudeCode/.gitignore .gitignore
+git add .github/workflows .claude/24hour-ClaudeCode.config.json .gitignore
 git commit -m "chore: configure 24hour-ClaudeCode actions"
 git push -u origin HEAD
 ```

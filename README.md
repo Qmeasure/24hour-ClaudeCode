@@ -73,7 +73,7 @@ The runtime follows a simple rule set inspired by skill-first agent workflows:
 
 ## Quick start
 
-The flow is **3 steps**: once per machine, once per repo, once per feature. After that, every feature you ship is one `git worktree add` away from a fully automated PR.
+The flow is **3 steps**: once per machine, once per repo, once per feature. After that, every feature you ship is one origin-based `git worktree add` away from a fully automated PR.
 
 ```
 Step 1 (once per machine)  → install plugin   ─┐  in any terminal
@@ -180,11 +180,18 @@ After onboarding finishes, **do one thing on the GitHub website**: open your rep
 
 ```bash
 # Still in ~/Projects/my-app (your main folder):
-git worktree add ../my-feature -b feat/my-feature
-#                ↑ creates ~/Projects/my-feature, on a new branch
+git fetch origin --prune
+git worktree add ../my-feature -b feat/my-feature origin/main
+#                                                 ↑ use origin/<your default branch>
 
 cd ../my-feature      # move into the worktree folder
 claude                # ← start a NEW Claude session here (don't reuse the one from main)
+```
+
+If your default branch is not `main`, replace `origin/main` with the branch shown by:
+
+```bash
+gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name'
 ```
 
 > 🔑 **Critical:** you must start a **new** Claude Code session inside the worktree folder. SessionStart hooks only fire once per session, so the runtime only activates when Claude starts up in the worktree dir. (If you `cd` into the worktree from an existing session, the runtime won't engage.)
@@ -192,6 +199,7 @@ claude                # ← start a NEW Claude session here (don't reuse the one
 When Claude opens in `../my-feature`, the plugin auto-detects:
 - ✓ inside a worktree
 - ✓ main is onboarded (config inherited automatically)
+- ✓ this branch contains the latest `origin/<default-branch>`
 - → **runtime is now ACTIVE in this worktree**. No setup needed.
 
 Tell Claude what to do. **Recommended:** use Claude Code `/goal` mode so the plugin waits until the goal is actually complete before it opens a PR:
@@ -207,7 +215,7 @@ The plugin takes over:
 - When native `/goal` is ready, or when a non-Goal turn appears ready to stop after implementation, the Stop prompt keeps Claude in the same session and tells it to use the `review-loop` skill
 - The `review-loop` skill commits, pushes, opens or updates the PR, and waits for GitHub Claude Code Action review
 - The PR gets reviewed automatically (Claude or Codex, whichever you chose)
-- If Claude Code Action review fails, the plugin shows Claude the feedback and Claude fixes it — up to 5 retry rounds. External CI is not generated or required unless you opt in with `github.require_external_ci=true`.
+- If Claude Code Action review fails, the plugin shows Claude the feedback and Claude fixes it in the same session. External CI is not generated or required unless you opt in with `github.require_external_ci=true`.
 - When everything is green, the plugin enables auto-merge and waits for the PR to merge
 - Done. From "add CSV export to reports" to "PR merged" — no `git` typing, no clicking "merge".
 
@@ -229,7 +237,7 @@ git worktree remove ../my-feature     # delete the worktree
 No. The review-loop skill commits only the files needed for the current task. Sensitive paths like `migrations/`, `.env.production`, `infra/`, and `**/secrets/**` are listed in `danger_paths` and require explicit care before commit.
 
 **What if the review keeps failing?**
-After 5 fix-and-retry rounds it stops automatically and tells you what's wrong. You take over from there.
+It reports a concrete blocker when review evidence is missing, stale, ambiguous, or requires human judgment. You take over from there.
 
 **What if I want to make a manual edit and not have the review loop start?**
 Two options:
@@ -240,7 +248,7 @@ Two options:
 No. It refuses to push to `main`, `master`, `develop`, `staging`, etc. You have to be on a feature branch.
 
 **How do I see what it's doing right now?**
-Run `/24hour-ClaudeCode:status` — it shows the review-loop state, git status, and current PR if one exists.
+Run `/24hour-ClaudeCode:status` — it shows git sync, config state, and current PR if one exists.
 
 **The auto-review is too strict / too loose. Can I tune it?**
 Yes. The review prompt is **inline in the workflow YAML** itself. Edit the `prompt:` block in `.github/workflows/claude-code-review.yml` (and/or `codex-review.yml`), commit, push. Changes apply to the next PR — no re-setup needed.
@@ -264,9 +272,9 @@ This removes the plugin. The workflow files in `.github/workflows/` and your API
 
 | Symptom | What to do |
 |---|---|
-| "It seems stuck" | Run `/24hour-ClaudeCode:status`. If it stopped safely, fix the root cause and use `/24hour-ClaudeCode:retry` to clear the stopped state. |
+| "It seems stuck" | Run `/24hour-ClaudeCode:status` to check git sync, current PR, and whether the branch is stale against `origin/<default-branch>`. |
 | "It can't push my code" | Check `gh auth status`. Re-authenticate if needed. |
-| "It said the loop hit a limit" | The plugin tried 5 times and couldn't satisfy review. Read its message and fix manually. |
+| "It reports a blocker" | Read the blocker, fix the root cause, then continue in the same worktree. |
 | "Reviews aren't happening" | Make sure GitHub's "Claude" app is installed on your repo and `CLAUDE_CODE_OAUTH_TOKEN` is set as a secret. Run `/24hour-ClaudeCode:setup` again. |
 | "I want to start fresh" | `/24hour-ClaudeCode:setup` is safe to re-run — it won't break existing config |
 
@@ -288,7 +296,7 @@ The most common changes:
 | What you want | How |
 |---|---|
 | Focus reviews on something specific (e.g., security only) | Edit the `prompt:` block in `.github/workflows/claude-code-review.yml` |
-| Allow more retry rounds before giving up | Change `repair.max_iterations` in the config file (default 5) |
+| Change review wait timeout | Change `repair.review_loop_timeout` in the config file |
 | Add a path that should require explicit care before commit | Add a glob to the `danger_paths` array in the config file |
 | Skip running tests before each commit (faster but riskier) | Set `checks.run_local_tests: false` in the config file |
 
@@ -302,7 +310,6 @@ These are escape hatches — you don't normally need them.
 |---|---|
 | `/24hour-ClaudeCode:setup` | Invoke the onboarding skill |
 | `/24hour-ClaudeCode:status` | Show what's happening right now |
-| `/24hour-ClaudeCode:retry` | Clear stopped review-loop state after you fix the cause |
 | `/24hour-ClaudeCode:disable` | Pause the plugin for this project |
 | `/24hour-ClaudeCode:enable` | Resume after pausing |
 

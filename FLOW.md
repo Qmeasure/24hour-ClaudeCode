@@ -32,29 +32,19 @@ The Stop hook is not a workflow engine. It is a prompt-based router: if Claude a
 |---|---|---|
 | `SessionStart` | `command: hooks/bootstrap.sh` | Detect environment and inject `github-actions-onboarding` or `using-24hour-ClaudeCode` as context. SessionStart does not support prompt hooks. |
 | `Stop` | `prompt` in `hooks/hooks.json` | Decide whether Claude may stop, or block with `REVIEW_LOOP_CONTINUE` so the current session uses `review-loop`. |
-| `Stop` while `review-loop` skill is active | `prompt` in `skills/review-loop/SKILL.md` | Keep the active review loop from stopping until `REVIEW_LOOP_DONE`, `REVIEW_LOOP_STOPPED`, or explicit user stop. |
+| `Stop` while `review-loop` skill is active | `prompt` in `skills/review-loop/SKILL.md` | Keep the active review loop from stopping until the PR is merged, auto-merge is enabled, a concrete blocker remains, or the user explicitly stops it. |
 
 There is no `UserPromptSubmit` Goal hook, no `PostToolUse` dirty marker, no async monitor, and no Stop-hook shell workflow.
 
 ## Runtime Files
 
-In each user worktree:
+In each user repo:
 
 ```text
-.claude/runtime/24hour-ClaudeCode/
-├── .gitignore                 # contains "*" and "!.gitignore"
-└── review-loop-state.md       # visible state owned by review-loop skill
+.claude/24hour-ClaudeCode.config.json
 ```
 
-Allowed review-loop states:
-
-```text
-REVIEW_LOOP_ACTIVE
-REVIEW_LOOP_DONE
-REVIEW_LOOP_STOPPED
-```
-
-The state file records PR number, current HEAD SHA, round number, review source, feedback summary, failure fingerprint, stop reason, and timestamp.
+The plugin does not create local loop-state markdown files. Runtime facts come from the current Claude session, git, the current PR, and current-SHA GitHub review surfaces.
 
 ## Goal Mode
 
@@ -69,20 +59,19 @@ When Stop emits `REVIEW_LOOP_CONTINUE`, Claude must invoke `skills/review-loop/S
 The skill workflow:
 
 1. Confirm the current checkout is a feature worktree, not the main checkout or a protected branch.
-2. Mark `REVIEW_LOOP_ACTIVE`.
-3. Enforce configured max rounds and repeated-failure stops.
-4. Inspect local changes and configured `danger_paths`.
-5. Run configured local checks when applicable.
-6. Commit current changes.
-7. Push current branch.
-8. Create, update, and ready the PR.
-9. Record `CURRENT_HEAD_SHA=$(git rev-parse HEAD)`.
-10. Wait for a completed GitHub Claude Code Action review run whose `headSha` equals `CURRENT_HEAD_SHA`.
-11. Read real GitHub review surfaces.
-12. Fix blocking/important feedback in the same WorkTree.
-13. Classify required external CI failures inside the same skill.
-14. Repeat until pass, stopped, or merged.
-15. On reliable pass, enable auto-merge or merge, then write `REVIEW_LOOP_DONE`.
+2. Run `git fetch origin --prune` and confirm the branch contains latest `origin/<default-branch>`.
+3. Inspect local changes and configured `danger_paths`.
+4. Run configured local checks when applicable.
+5. Commit current changes.
+6. Push current branch.
+7. Create, update, and ready the PR.
+8. Bind `CURRENT_HEAD_SHA=$(git rev-parse HEAD)` in the current context.
+9. Wait for a completed GitHub Claude Code Action review run whose `headSha` equals `CURRENT_HEAD_SHA`.
+10. Read real GitHub review surfaces.
+11. Fix blocking/important feedback in the same WorkTree.
+12. Classify required external CI failures inside the same skill.
+13. Repeat until pass, blocked, or merged.
+14. On reliable pass, enable auto-merge or merge.
 
 The current Claude Code session is the only fixer. The GitHub Action is reviewer only.
 
@@ -103,7 +92,7 @@ Hard gates:
 - No stale review as pass.
 - No ambiguous review as pass.
 - No auto-merge unless PR head equals current local HEAD SHA.
-- If SHA binding cannot be confirmed, write `REVIEW_LOOP_STOPPED`.
+- If SHA binding cannot be confirmed, stop and report a concrete blocker.
 
 ## Scripts
 
@@ -136,8 +125,7 @@ Do not add a prompt or agent hook that performs PR/review/merge work. Non-comman
 | Command | Purpose |
 |---|---|
 | `/24hour-ClaudeCode:setup` | Invoke onboarding skill. |
-| `/24hour-ClaudeCode:status` | Read visible review-loop state, git status, and current PR. |
-| `/24hour-ClaudeCode:retry` | Clear `REVIEW_LOOP_STOPPED` state after the root cause is fixed. |
+| `/24hour-ClaudeCode:status` | Read config, git sync, and current PR status. |
 | `/24hour-ClaudeCode:disable` | Stop automatic review-loop triggering. |
 | `/24hour-ClaudeCode:enable` | Re-enable automatic review-loop triggering. |
 

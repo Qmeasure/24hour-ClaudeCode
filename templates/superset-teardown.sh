@@ -14,8 +14,6 @@ set -uo pipefail
 ROOT="${SUPERSET_ROOT_PATH:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 WS_NAME="${SUPERSET_WORKSPACE_NAME:-$(git branch --show-current 2>/dev/null || echo unnamed)}"
 WS_PATH="${SUPERSET_WORKSPACE_PATH:-$(pwd)}"
-RUNTIME="$WS_PATH/.claude/runtime/24hour-ClaudeCode"
-
 echo "▸ Workspace teardown: $WS_NAME"
 
 # Reminder

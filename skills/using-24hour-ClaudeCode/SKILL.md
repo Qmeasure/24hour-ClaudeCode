@@ -32,7 +32,7 @@ When the `Stop` prompt blocks stopping, its `reason` must explicitly instruct th
 ```text
 REVIEW_LOOP_CONTINUE
 
-Use the `review-loop` skill (via the Skill tool) to run the complete PR review loop in this same Claude Code session and same WorkTree. Follow `skills/review-loop/SKILL.md` exactly. Do not stop until the `review-loop` skill writes REVIEW_LOOP_DONE or REVIEW_LOOP_STOPPED.
+Use the `review-loop` skill (via the Skill tool) to run the complete PR review loop in this same Claude Code session and same WorkTree. Follow `skills/review-loop/SKILL.md` exactly. Do not stop until the PR is merged, auto-merge is enabled, or a concrete blocker is reported to the user.
 ```
 
 When you see `REVIEW_LOOP_CONTINUE`, immediately use the `review-loop` skill via the Skill tool and follow it exactly. Do not treat this as a suggestion, and do not continue with ad hoc PR logic outside the skill.
@@ -43,7 +43,7 @@ When you see `REVIEW_LOOP_CONTINUE`, immediately use the `review-loop` skill via
 |---|---|---|
 | `SessionStart` | `hooks/hooks.json` -> `hooks/bootstrap.sh` | Detect onboarding/runtime state and inject either `github-actions-onboarding` or this runtime contract. |
 | `Stop` | `hooks/hooks.json` prompt hook | If implementation appears complete in an active worktree, block stopping and tell Claude to use `review-loop` via the Skill tool. |
-| `Stop` while `review-loop` is active | `skills/review-loop/SKILL.md` frontmatter | Keep the review loop running until `REVIEW_LOOP_DONE`, `REVIEW_LOOP_STOPPED`, or explicit user stop. |
+| `Stop` while `review-loop` is active | `skills/review-loop/SKILL.md` frontmatter | Keep the review loop running until the PR is merged, auto-merge is enabled, a concrete blocker remains, or the user explicitly stops it. |
 
 Hooks must not own the PR workflow. The PR workflow belongs to `review-loop`.
 
@@ -54,6 +54,7 @@ The runtime is active only when all of these are true:
 ```text
 current session is in a git worktree
 branch is not protected
+current HEAD contains latest origin/default branch
 GitHub CLI auth works
 workflow files are installed
 .claude/24hour-ClaudeCode.config.json exists and is enabled
@@ -78,22 +79,15 @@ If native `/goal` still appears in progress, let native `/goal` continue. After 
 
 All PR review triage, rework, CI triage, pre-push checks, stop handling, and merge handling stay inside `review-loop`.
 
-## State Files
+## Runtime Files
 
-Project runtime state is repo-local:
+Project runtime config is repo-local:
 
 ```text
 .claude/24hour-ClaudeCode.config.json
-.claude/runtime/24hour-ClaudeCode/.gitignore
-.claude/runtime/24hour-ClaudeCode/review-loop-state.md
 ```
 
-`review-loop-state.md` is visible to Claude but ignored by git. It must reach one terminal state before the loop may stop:
-
-```text
-REVIEW_LOOP_DONE
-REVIEW_LOOP_STOPPED
-```
+Do not create or rely on local loop-state markdown files. GitHub, git, and the current Claude Code session are the sources of truth.
 
 ## Slash Commands
 
@@ -102,8 +96,7 @@ The `commands/` directory is intentionally kept. Claude Code plugins discover fl
 | Command | Purpose |
 |---|---|
 | `/24hour-ClaudeCode:setup` | Use `github-actions-onboarding`. |
-| `/24hour-ClaudeCode:status` | Read runtime state, git status, and current PR. |
-| `/24hour-ClaudeCode:retry` | Clear `REVIEW_LOOP_STOPPED` after the root cause is fixed. |
+| `/24hour-ClaudeCode:status` | Read git sync, config, and current PR status. |
 | `/24hour-ClaudeCode:disable` | Set project config `enabled=false`. |
 | `/24hour-ClaudeCode:enable` | Set project config `enabled=true`. |
 

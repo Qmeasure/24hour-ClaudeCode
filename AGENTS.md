@@ -30,9 +30,9 @@ This repository contains the `24hour-ClaudeCode` Claude Code plugin. Runtime beh
 - Do not put an explicit hook input placeholder in review-loop hook prompts.
 - Review-loop hook prompts must contain only the workflow objective and workflow steps.
 - Do not include hook decision scaffolding in review-loop prompts: no return-instruction block, no allow/block JSON examples, no protocol fields, no acceptance-criteria section, and no output-format section.
-- The prompt content should state only the complete review-loop workflow: use the `review-loop` skill via the Skill tool, preflight, prove reviewable changes, inspect, verify, commit, push, bind current SHA, create or refresh PR, wait for current-SHA GitHub review, read top-level and inline review output, fix blocking security/correctness findings, repeat, merge or enable auto-merge, then write a terminal state.
+- The prompt content should state only the complete review-loop workflow: use the `review-loop` skill via the Skill tool, preflight, prove reviewable changes, inspect, verify, commit, push, bind current SHA, create or refresh PR, wait for current-SHA GitHub review, read top-level and inline review output, fix blocking security/correctness findings, repeat, merge or enable auto-merge, or report a concrete blocker.
 - Keep unrelated rationale, history, implementation commentary, JSON protocol details, and fallback narratives out of the hook prompt.
-- Onboarding must add `.Claude/` to the project root `.gitignore`. Do not add `.claude/` there, because onboarding intentionally commits `.claude/24hour-ClaudeCode.config.json` and `.claude/runtime/24hour-ClaudeCode/.gitignore`.
+- Onboarding must add `.Claude/` to the project root `.gitignore`. Do not add `.claude/` there, because onboarding intentionally commits `.claude/24hour-ClaudeCode.config.json`.
 
 ## Version Bump Rule
 
@@ -56,7 +56,16 @@ Superset workspace scripts run inside user project worktrees, not inside the plu
 claude plugin list
 ```
 
-The setup script must not call removed runtime helpers such as `scripts/check-actions.sh`, and must not print maintenance commands pointing at plugin-internal scripts. It may point users to slash commands such as `/24hour-ClaudeCode:status`, `/24hour-ClaudeCode:retry`, `/24hour-ClaudeCode:setup`, and `claude plugin details 24hour-ClaudeCode@24hour-ClaudeCode`.
+The setup script must not call removed runtime helpers such as `scripts/check-actions.sh`, must not reference local loop-state markdown files, and must not print maintenance commands pointing at plugin-internal scripts. It may point users to slash commands such as `/24hour-ClaudeCode:status`, `/24hour-ClaudeCode:setup`, and `claude plugin details 24hour-ClaudeCode@24hour-ClaudeCode`.
+
+Superset worktrees must be based on the latest remote default branch. Creation guidance must use:
+
+```bash
+git fetch origin --prune
+git worktree add ../my-feature -b feat/my-feature origin/<default-branch>
+```
+
+`.superset/setup.sh` must re-check this after creation with `git fetch origin --prune` and `git merge-base --is-ancestor origin/<default-branch> HEAD`; stale worktrees should fail setup before coding starts.
 
 When changing Superset templates, validate with a temporary repo install plus `bash scripts/install-superset-config.sh --verify`; the verifier should catch stale `.superset/setup.sh` copies that still reference project-local plugin paths or removed scripts.
 

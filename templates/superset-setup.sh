@@ -8,7 +8,7 @@
 #   - Verify worktree + marketplace plugin presence
 #   - Verify gh CLI auth + workflow scope
 #   - Verify Claude Code Actions workflow YML(s) present
-#   - Initialize .claude/runtime/24hour-ClaudeCode/
+#   - Verify the worktree branch contains latest origin/default branch
 #   - Install project dependencies (project-specific; see "Dependencies" section)
 #
 # FORBIDDEN here (do these in review-loop skill instead):
@@ -55,9 +55,15 @@ echo ""
 # ---- 1. Worktree check ----
 git_dir=$(git rev-parse --git-dir 2>/dev/null || echo "")
 git_common=$(git rev-parse --git-common-dir 2>/dev/null || echo "")
+MAIN_CHECKOUT="$ROOT"
+if [[ "$git_common" == */.git ]]; then
+  MAIN_CHECKOUT="${git_common%/.git}"
+fi
 if [[ -z "$git_dir" || "$git_dir" == "$git_common" ]]; then
   warn "Not in a git worktree (this looks like the main checkout)."
-  echo "      Open a worktree first: git worktree add ../my-feature -b feat/my-feature"
+  echo "      Open a worktree from the latest remote default branch:"
+  echo "        git fetch origin --prune"
+  echo "        git worktree add ../my-feature -b feat/my-feature origin/<default-branch>"
 else
   IS_LINKED_WORKTREE=1
 fi
@@ -97,10 +103,49 @@ else
   warn "Claude/Codex review workflow missing. From main checkout: /24hour-ClaudeCode:setup"
 fi
 
-# ---- 5. Initialize runtime ----
-mkdir -p "$WS_PATH/.claude/runtime/24hour-ClaudeCode" 2>/dev/null || true
-printf '*\n!.gitignore\n' > "$WS_PATH/.claude/runtime/24hour-ClaudeCode/.gitignore" 2>/dev/null || true
-ok "Runtime directory initialized at .claude/runtime/24hour-ClaudeCode/"
+# ---- 5. Ensure this worktree is based on latest origin/default ----
+if (( IS_LINKED_WORKTREE == 1 )); then
+  default_branch=""
+  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+    default_branch="$(gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null || true)"
+  fi
+  if [[ -z "$default_branch" ]]; then
+    default_branch="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##' || true)"
+  fi
+  default_branch="${default_branch:-main}"
+  base_ref="origin/$default_branch"
+
+  if git fetch origin --prune >/dev/null 2>&1; then
+    ok "Fetched origin before base freshness check"
+  else
+    warn "Could not fetch origin; cannot prove this worktree is based on the latest remote default branch."
+    echo "      Run: git fetch origin --prune"
+    exit 1
+  fi
+
+  if ! git rev-parse --verify "$base_ref" >/dev/null 2>&1; then
+    warn "Missing $base_ref after fetch; cannot verify worktree base."
+    echo "      Check remote/default branch configuration, then recreate this worktree from origin."
+    exit 1
+  fi
+
+  if git merge-base --is-ancestor "$base_ref" HEAD; then
+    ok "Worktree branch contains latest $base_ref"
+  else
+    warn "This worktree branch is not based on latest $base_ref."
+    echo "      Before coding, update this branch:"
+    echo "        git fetch origin --prune"
+    echo "        git rebase $base_ref"
+    echo ""
+    echo "      Or recreate it from latest origin:"
+    echo "        cd $MAIN_CHECKOUT"
+    echo "        git worktree remove $WS_PATH"
+    echo "        git branch -D $WS_NAME"
+    echo "        git fetch origin --prune"
+    echo "        git worktree add $WS_PATH -b $WS_NAME $base_ref"
+    exit 1
+  fi
+fi
 
 # ---- 6. Install project dependencies (PROJECT-SPECIFIC — EDIT THIS BLOCK) ----
 echo ""
@@ -139,14 +184,13 @@ $(bold 'Start coding:')
 
 $(bold 'Maintenance commands:')
   /24hour-ClaudeCode:status
-  /24hour-ClaudeCode:retry        # clear stopped review-loop state
   claude plugin list              # verify plugin install status
 EOF
 
 if (( IS_LINKED_WORKTREE == 1 )); then
   cat <<EOF
 $(bold 'When done — clean up worktree (run from MAIN checkout):')
-  cd $ROOT
+  cd $MAIN_CHECKOUT
   git worktree remove $WS_PATH
   git branch -d $WS_NAME
 EOF

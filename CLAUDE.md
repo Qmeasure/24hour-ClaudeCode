@@ -39,7 +39,7 @@ Follow these principles when changing runtime behavior:
 - `UserPromptSubmit` is a fully supported Claude Code hook event. It fires before Claude processes each submitted prompt, supports context injection and prompt blocking, and does not support matchers; use it when prompt-time routing or Goal-related context is needed.
 - Skill = behavior, judgment, and workflow. `review-loop` owns commit/push/PR/review/fix/merge sequencing; `github-actions-onboarding` owns repo onboarding.
 - Script = deterministic mechanical helper only. Scripts need clear input/output and should be safe to run repeatedly.
-- State = minimal and visible. Keep `review-loop-state.md` readable; do not encode hidden workflow machinery in state.
+- State = GitHub/git/session facts only. Do not create or require local loop-state markdown files; do not gate review-loop progress on local markdown state.
 - Review = real GitHub surfaces. Do not require custom verdict artifacts or infer pass from silence.
 - Session = same Claude Code session and WorkTree. Do not spawn another Claude CLI to repair code.
 - Skill description = trigger condition only. Put workflow details in the skill body.
@@ -62,9 +62,9 @@ The successful `/Users/lesterbot/Downloads/claude-test2` review-loop pattern is 
 - Do not put an explicit hook input placeholder in review-loop hook prompts. Claude Code appends hook input when the placeholder is omitted.
 - Review-loop hook prompts must contain only the workflow objective and workflow steps.
 - Do not include hook decision scaffolding in review-loop prompts: no return-instruction block, no allow/block JSON examples, no protocol fields, no acceptance-criteria section, and no output-format section.
-- The prompt content should state only the complete review-loop workflow: use the `review-loop` skill via the Skill tool, preflight, prove reviewable changes, inspect, verify, commit, push, bind current SHA, create or refresh PR, wait for current-SHA GitHub review, read top-level and inline review output, fix blocking security/correctness findings, repeat, merge or enable auto-merge, then write a terminal state.
+- The prompt content should state only the complete review-loop workflow: use the `review-loop` skill via the Skill tool, preflight, prove reviewable changes, inspect, verify, commit, push, bind current SHA, create or refresh PR, wait for current-SHA GitHub review, read top-level and inline review output, fix blocking security/correctness findings, repeat, merge or enable auto-merge, or report a concrete blocker.
 - Keep unrelated rationale, history, implementation commentary, JSON protocol details, and fallback narratives out of the hook prompt.
-- Onboarding must add `.Claude/` to the project root `.gitignore`. Do not add `.claude/` there, because onboarding intentionally commits `.claude/24hour-ClaudeCode.config.json` and `.claude/runtime/24hour-ClaudeCode/.gitignore`.
+- Onboarding must add `.Claude/` to the project root `.gitignore`. Do not add `.claude/` there, because onboarding intentionally commits `.claude/24hour-ClaudeCode.config.json`.
 
 ## Version Bump Rule
 
@@ -88,7 +88,16 @@ Superset workspace scripts run inside user project worktrees, not inside the plu
 claude plugin list
 ```
 
-The setup script must not call removed runtime helpers such as `scripts/check-actions.sh`, and must not print maintenance commands pointing at plugin-internal scripts. It may point users to slash commands such as `/24hour-ClaudeCode:status`, `/24hour-ClaudeCode:retry`, `/24hour-ClaudeCode:setup`, and `claude plugin details 24hour-ClaudeCode@24hour-ClaudeCode`.
+The setup script must not call removed runtime helpers such as `scripts/check-actions.sh`, must not reference local loop-state markdown files, and must not print maintenance commands pointing at plugin-internal scripts. It may point users to slash commands such as `/24hour-ClaudeCode:status`, `/24hour-ClaudeCode:setup`, and `claude plugin details 24hour-ClaudeCode@24hour-ClaudeCode`.
+
+Superset worktrees must be based on the latest remote default branch. Creation guidance must use:
+
+```bash
+git fetch origin --prune
+git worktree add ../my-feature -b feat/my-feature origin/<default-branch>
+```
+
+`.superset/setup.sh` must re-check this after creation with `git fetch origin --prune` and `git merge-base --is-ancestor origin/<default-branch> HEAD`; stale worktrees should fail setup before coding starts.
 
 When changing Superset templates, validate with a temporary repo install plus `bash scripts/install-superset-config.sh --verify`; the verifier should catch stale `.superset/setup.sh` copies that still reference project-local plugin paths or removed scripts.
 
@@ -126,9 +135,7 @@ Do not rely on memory when a task touches Claude Code hooks or plugins. Verify t
 
 - `skills/review-loop/SKILL.md` — main workflow.
 - `skills/using-24hour-ClaudeCode/SKILL.md` — bootstrap contract injected by SessionStart.
-- `.claude/runtime/24hour-ClaudeCode/review-loop-state.md` — visible loop state in user projects.
-
-The runtime state directory must contain `.gitignore` with `*` so local state never leaks into PR diffs.
+Do not create a local review-loop state directory or markdown file in user projects. The review-loop source of truth is the current Claude session plus git, PR, and current-SHA GitHub Actions/review surfaces.
 
 ## What Scripts Are For
 
