@@ -54,7 +54,6 @@ The runtime is active only when all of these are true:
 ```text
 current session is in a git worktree
 branch is not protected
-current HEAD contains latest origin/default branch
 GitHub CLI auth works
 workflow files are installed
 .claude/24hour-ClaudeCode.config.json exists and is enabled
@@ -96,7 +95,7 @@ The `commands/` directory is intentionally kept. Claude Code plugins discover fl
 | Command | Purpose |
 |---|---|
 | `/24hour-ClaudeCode:setup` | Use `github-actions-onboarding`. |
-| `/24hour-ClaudeCode:status` | Read git sync, config, and current PR status. |
+| `/24hour-ClaudeCode:status` | Read git status, config, and current PR status. |
 | `/24hour-ClaudeCode:disable` | Set project config `enabled=false`. |
 | `/24hour-ClaudeCode:enable` | Set project config `enabled=true`. |
 

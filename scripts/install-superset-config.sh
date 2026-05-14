@@ -7,8 +7,8 @@
 #                 then print explicit activation steps (commit from the normal
 #                 workflow, register repo, verify).
 #   --verify    : check whether activation is complete (config + hook scripts
-#                 exist, setup uses current plugin detection, setup checks the
-#                 latest origin/default branch, and files are committed).
+#                 exist, setup uses current plugin detection, setup updates
+#                 Superset worktrees to origin/main, and files are committed).
 #                 Returns non-zero on issues.
 #   --uninstall : delete .superset/config.json only when --force is also passed.
 #
@@ -115,8 +115,8 @@ if (( VERIFY == 1 )); then
     fi
   done
 
-  # 4. setup.sh must use current marketplace plugin detection, must enforce an
-  # origin/default freshness check, and must not reference removed runtime state.
+  # 4. setup.sh must use current marketplace plugin detection, must update
+  # Superset worktrees to origin/main, and must not reference removed runtime state.
   if [[ -f ".superset/setup.sh" ]]; then
     if grep -qE '\.claude/plugins/24hour-ClaudeCode|scripts/check-actions\.sh|PLUGIN_DIR=|loop-state.*\.md|\.claude/runtime/24hour-ClaudeCode' ".superset/setup.sh"; then
       warn ".superset/setup.sh contains stale project-local plugin path, removed check-actions.sh, or removed runtime-state references"
@@ -132,10 +132,12 @@ if (( VERIFY == 1 )); then
       WARN_COUNT=$((WARN_COUNT+1))
     fi
 
-    if grep -qF 'git fetch origin --prune' ".superset/setup.sh" && grep -qF 'git merge-base --is-ancestor "$base_ref" HEAD' ".superset/setup.sh"; then
-      ok ".superset/setup.sh verifies worktree base against latest origin/default"
+    if grep -qF 'git fetch origin --prune' ".superset/setup.sh" && \
+       grep -qF 'git reset --hard "$target_ref"' ".superset/setup.sh" && \
+       grep -qF 'git clean -fd' ".superset/setup.sh"; then
+      ok ".superset/setup.sh updates Superset worktrees to origin/main"
     else
-      warn ".superset/setup.sh does not enforce latest origin/default branch freshness"
+      warn ".superset/setup.sh does not update Superset worktrees to origin/main"
       WARN_COUNT=$((WARN_COUNT+1))
     fi
   fi
@@ -264,8 +266,7 @@ if command -v superset >/dev/null 2>&1; then
   echo ""
   echo "  If you haven't added this repo as a Superset project yet, do it via the"
   echo "  Superset client UI (or CLI — see 'superset --help')."
-  echo "  For CLI-created workspaces, pass --base-branch <default-branch> and let"
-  echo "  .superset/setup.sh verify the branch contains latest origin/<default-branch>."
+  echo "  Superset setup will fetch origin and update opened worktrees to origin/main."
   echo ""
   echo "  Reference: https://docs.superset.sh"
 else

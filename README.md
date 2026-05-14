@@ -73,7 +73,7 @@ The runtime follows a simple rule set inspired by skill-first agent workflows:
 
 ## Quick start
 
-The flow is **3 steps**: once per machine, once per repo, once per feature. After that, every feature you ship is one origin-based `git worktree add` away from a fully automated PR.
+The flow is **3 steps**: once per machine, once per repo, once per feature. After that, every feature you ship is one `git worktree add` away from a fully automated PR.
 
 ```
 Step 1 (once per machine)  → install plugin   ─┐  in any terminal
@@ -180,18 +180,11 @@ After onboarding finishes, **do one thing on the GitHub website**: open your rep
 
 ```bash
 # Still in ~/Projects/my-app (your main folder):
-git fetch origin --prune
-git worktree add ../my-feature -b feat/my-feature origin/main
-#                                                 ↑ use origin/<your default branch>
+git worktree add ../my-feature -b feat/my-feature
+#                ↑ creates ~/Projects/my-feature, on a new branch
 
 cd ../my-feature      # move into the worktree folder
 claude                # ← start a NEW Claude session here (don't reuse the one from main)
-```
-
-If your default branch is not `main`, replace `origin/main` with the branch shown by:
-
-```bash
-gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name'
 ```
 
 > 🔑 **Critical:** you must start a **new** Claude Code session inside the worktree folder. SessionStart hooks only fire once per session, so the runtime only activates when Claude starts up in the worktree dir. (If you `cd` into the worktree from an existing session, the runtime won't engage.)
@@ -199,7 +192,6 @@ gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name'
 When Claude opens in `../my-feature`, the plugin auto-detects:
 - ✓ inside a worktree
 - ✓ main is onboarded (config inherited automatically)
-- ✓ this branch contains the latest `origin/<default-branch>`
 - → **runtime is now ACTIVE in this worktree**. No setup needed.
 
 Tell Claude what to do. **Recommended:** use Claude Code `/goal` mode so the plugin waits until the goal is actually complete before it opens a PR:
@@ -248,7 +240,7 @@ Two options:
 No. It refuses to push to `main`, `master`, `develop`, `staging`, etc. You have to be on a feature branch.
 
 **How do I see what it's doing right now?**
-Run `/24hour-ClaudeCode:status` — it shows git sync, config state, and current PR if one exists.
+Run `/24hour-ClaudeCode:status` — it shows config state, git status, and current PR if one exists.
 
 **The auto-review is too strict / too loose. Can I tune it?**
 Yes. The review prompt is **inline in the workflow YAML** itself. Edit the `prompt:` block in `.github/workflows/claude-code-review.yml` (and/or `codex-review.yml`), commit, push. Changes apply to the next PR — no re-setup needed.
@@ -272,7 +264,7 @@ This removes the plugin. The workflow files in `.github/workflows/` and your API
 
 | Symptom | What to do |
 |---|---|
-| "It seems stuck" | Run `/24hour-ClaudeCode:status` to check git sync, current PR, and whether the branch is stale against `origin/<default-branch>`. |
+| "It seems stuck" | Run `/24hour-ClaudeCode:status` to check config, git status, and the current PR. |
 | "It can't push my code" | Check `gh auth status`. Re-authenticate if needed. |
 | "It reports a blocker" | Read the blocker, fix the root cause, then continue in the same worktree. |
 | "Reviews aren't happening" | Make sure GitHub's "Claude" app is installed on your repo and `CLAUDE_CODE_OAUTH_TOKEN` is set as a secret. Run `/24hour-ClaudeCode:setup` again. |

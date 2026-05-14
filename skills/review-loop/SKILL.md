@@ -93,7 +93,6 @@ Stop and report the blocker if any gate fails:
 
 - Current checkout is not a git worktree.
 - Current branch is protected: `main`, `master`, `develop`, `dev`, `staging`, `production`, `prod`, `release`, `release/*`, or `hotfix/*`.
-- Current branch does not contain the latest `origin/<default-branch>` after `git fetch origin --prune`.
 - `.claude/24hour-ClaudeCode.config.json` exists with `enabled=false`.
 - `gh auth status` fails.
 - Review evidence cannot be reliably tied to `CURRENT_HEAD_SHA`.
@@ -132,22 +131,7 @@ Verify GitHub access:
 gh auth status
 ```
 
-Confirm this branch is based on the latest remote default branch:
-
-```bash
-git fetch origin --prune
-default_branch="$(gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null || true)"
-if [ -z "$default_branch" ]; then
-  default_branch="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##' || true)"
-fi
-default_branch="${default_branch:-main}"
-base_ref="origin/$default_branch"
-if git rev-parse --verify "$base_ref" >/dev/null 2>&1 && ! git merge-base --is-ancestor "$base_ref" HEAD; then
-  # Stop: branch is not based on latest origin/default branch
-fi
-```
-
-Keep `default_branch`, `base_ref`, and `CURRENT_HEAD_SHA` in the current context. Do not write them to a local state file.
+Keep `CURRENT_HEAD_SHA` in the current context. Do not write it to a local state file.
 
 ## Step 2: Inspect, Verify, Commit
 

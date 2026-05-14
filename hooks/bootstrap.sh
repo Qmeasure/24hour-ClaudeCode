@@ -179,7 +179,7 @@ fi
 
 # Branch B: onboarded but not in a worktree → dormant
 if (( in_worktree == 0 )); then
-  emit "[24hour-ClaudeCode] Dormant: not running inside a git worktree. The runtime engages only when you enter a worktree created from the latest remote default branch (\`git fetch origin --prune && git worktree add ../my-feature -b feat/my-feature origin/<default-branch>\`)."
+  emit "[24hour-ClaudeCode] Dormant: not running inside a git worktree. The runtime engages only when you enter a worktree (\`git worktree add ../my-feature -b feat/my-feature\`)."
 fi
 
 # Branch C: protected branch → dormant

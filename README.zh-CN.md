@@ -73,7 +73,7 @@ Runtime 遵循一组 skill-first 原则:
 
 ## 快速开始
 
-整个流程**就 3 步**:每台机器一次、每个 repo 一次、每个 feature 一次。配好以后,你每开发一个新 feature,只要从 `origin/<默认分支>` 创建 worktree,后面 PR 全自动跑完。
+整个流程**就 3 步**:每台机器一次、每个 repo 一次、每个 feature 一次。配好以后,你每开发一个新 feature,只要 `git worktree add` 一下,后面 PR 全自动跑完。
 
 ```
 第 1 步(每台机器一次)→ 安装 plugin            ─┐  任意终端、任意目录
@@ -180,18 +180,11 @@ Onboarding 完成后,**在 GitHub 网页上做一件事**:打开你的 repo → 
 
 ```bash
 # 还在 ~/Projects/my-app(你的主目录)里:
-git fetch origin --prune
-git worktree add ../my-feature -b feat/my-feature origin/main
-#                                                 ↑ 换成 origin/<你的默认分支>
+git worktree add ../my-feature -b feat/my-feature
+#                ↑ 创建 ~/Projects/my-feature,新分支
 
 cd ../my-feature      # 进 worktree 目录
 claude                # ← 在这里开新 Claude session(不要复用主目录那个)
-```
-
-如果默认分支不是 `main`,先查默认分支名:
-
-```bash
-gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name'
 ```
 
 > 🔑 **关键:** 必须在 worktree 目录**重新开** Claude Code session。SessionStart hook 一个会话只跑一次,所以 plugin 的 runtime 只在 Claude 在 worktree 目录"启动时"才会激活。如果你只是把已有 session `cd` 过来,runtime 不会生效。
@@ -199,7 +192,6 @@ gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name'
 Claude 在 `../my-feature` 里启动后,plugin 自动检测:
 - ✓ 在 worktree 里
 - ✓ main 已 onboard(配置自动继承)
-- ✓ 当前分支包含最新 `origin/<default-branch>`
 - → **当前 worktree 的 runtime 已激活**,不需要重做 setup。
 
 让 Claude 开始干活。**推荐方式:** 用 Claude Code `/goal` 模式,这样 plugin 会等到目标真正完成后才发 PR:
@@ -248,7 +240,7 @@ git worktree remove ../my-feature     # 删 worktree
 不会。它拒绝 push 到 `main` / `master` / `develop` / `staging` 这种受保护的分支。必须切到 feature 分支才会动。
 
 **怎么看它现在在干啥?**
-跑 `/24hour-ClaudeCode:status`,会展示 git sync、config 状态,以及当前分支的 PR。
+跑 `/24hour-ClaudeCode:status`,会展示 config 状态、git status,以及当前分支的 PR。
 
 **自动审核太严 / 太松,能调吗?**
 能。review prompt **直接写在 workflow YAML 里**。改 `.github/workflows/claude-code-review.yml`(以及 `codex-review.yml` 如果用 Codex)的 `prompt:` 块,commit、push,下个 PR 自动生效,不需要重 setup。
@@ -272,7 +264,7 @@ claude plugin update 24hour-ClaudeCode@24hour-ClaudeCode  # 安装最新版本
 
 | 现象 | 怎么办 |
 |---|---|
-| "它好像卡住了" | 跑 `/24hour-ClaudeCode:status`,看 git sync、当前 PR,以及分支是否落后 `origin/<default-branch>` |
+| "它好像卡住了" | 跑 `/24hour-ClaudeCode:status`,看 config、git status 和当前 PR |
 | "它推不上代码" | 检查 `gh auth status`,需要的话重新登录 |
 | "它报告 blocker" | 看 blocker,修根因,然后在同一个 worktree 继续 |
 | "审核没跑起来" | 确认 GitHub 上的 "Claude" App 装到了你的 repo,且 `CLAUDE_CODE_OAUTH_TOKEN` 这个 secret 存在。重跑 `/24hour-ClaudeCode:setup` 即可 |

@@ -59,19 +59,18 @@ When Stop emits `REVIEW_LOOP_CONTINUE`, Claude must invoke `skills/review-loop/S
 The skill workflow:
 
 1. Confirm the current checkout is a feature worktree, not the main checkout or a protected branch.
-2. Run `git fetch origin --prune` and confirm the branch contains latest `origin/<default-branch>`.
-3. Inspect local changes and configured `danger_paths`.
-4. Run configured local checks when applicable.
-5. Commit current changes.
-6. Push current branch.
-7. Create, update, and ready the PR.
-8. Bind `CURRENT_HEAD_SHA=$(git rev-parse HEAD)` in the current context.
-9. Wait for a completed GitHub Claude Code Action review run whose `headSha` equals `CURRENT_HEAD_SHA`.
-10. Read real GitHub review surfaces.
-11. Fix blocking/important feedback in the same WorkTree.
-12. Classify required external CI failures inside the same skill.
-13. Repeat until pass, blocked, or merged.
-14. On reliable pass, enable auto-merge or merge.
+2. Inspect local changes and configured `danger_paths`.
+3. Run configured local checks when applicable.
+4. Commit current changes.
+5. Push current branch.
+6. Create, update, and ready the PR.
+7. Bind `CURRENT_HEAD_SHA=$(git rev-parse HEAD)` in the current context.
+8. Wait for a completed GitHub Claude Code Action review run whose `headSha` equals `CURRENT_HEAD_SHA`.
+9. Read real GitHub review surfaces.
+10. Fix blocking/important feedback in the same WorkTree.
+11. Classify required external CI failures inside the same skill.
+12. Repeat until pass, blocked, or merged.
+13. On reliable pass, enable auto-merge or merge.
 
 The current Claude Code session is the only fixer. The GitHub Action is reviewer only.
 
@@ -125,7 +124,7 @@ Do not add a prompt or agent hook that performs PR/review/merge work. Non-comman
 | Command | Purpose |
 |---|---|
 | `/24hour-ClaudeCode:setup` | Invoke onboarding skill. |
-| `/24hour-ClaudeCode:status` | Read config, git sync, and current PR status. |
+| `/24hour-ClaudeCode:status` | Read config, git status, and current PR status. |
 | `/24hour-ClaudeCode:disable` | Stop automatic review-loop triggering. |
 | `/24hour-ClaudeCode:enable` | Re-enable automatic review-loop triggering. |
 

@@ -90,14 +90,15 @@ claude plugin list
 
 The setup script must not call removed runtime helpers such as `scripts/check-actions.sh`, must not reference local loop-state markdown files, and must not print maintenance commands pointing at plugin-internal scripts. It may point users to slash commands such as `/24hour-ClaudeCode:status`, `/24hour-ClaudeCode:setup`, and `claude plugin details 24hour-ClaudeCode@24hour-ClaudeCode`.
 
-Superset worktrees must be based on the latest remote default branch. Creation guidance must use:
+Superset setup is allowed to normalize a newly opened Superset workspace to `origin/main`; do not apply this rule to non-Superset flows. The setup script must fetch and, when needed, reset the current Superset worktree to `origin/main`:
 
 ```bash
 git fetch origin --prune
-git worktree add ../my-feature -b feat/my-feature origin/<default-branch>
+git reset --hard origin/main
+git clean -fd
 ```
 
-`.superset/setup.sh` must re-check this after creation with `git fetch origin --prune` and `git merge-base --is-ancestor origin/<default-branch> HEAD`; stale worktrees should fail setup before coding starts.
+Do not change the normal feature worktree creation guidance for users who are not using Superset.
 
 When changing Superset templates, validate with a temporary repo install plus `bash scripts/install-superset-config.sh --verify`; the verifier should catch stale `.superset/setup.sh` copies that still reference project-local plugin paths or removed scripts.
 

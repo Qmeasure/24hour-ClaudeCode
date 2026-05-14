@@ -59,19 +59,18 @@ Stop 输出 `REVIEW_LOOP_CONTINUE` 后,Claude 必须使用 `skills/review-loop/S
 Skill 工作流:
 
 1. 确认当前 checkout 是 feature worktree,不是主 checkout 或受保护分支。
-2. 运行 `git fetch origin --prune`,确认当前分支包含最新 `origin/<default-branch>`。
-3. 检查本地变更和配置的 `danger_paths`。
-4. 必要时运行本地 checks。
-5. commit 当前变更。
-6. push 当前分支。
-7. 创建、更新并 ready PR。
-8. 在当前上下文绑定 `CURRENT_HEAD_SHA=$(git rev-parse HEAD)`。
-9. 等待 `headSha` 等于 `CURRENT_HEAD_SHA` 的 GitHub Claude Code Action review run 完成。
-10. 读取真实 GitHub review surfaces。
-11. 在同一个 WorkTree 修 blocking/important feedback。
-12. 在同一个 skill 内分类 required external CI failure。
-13. 重复直到 pass、blocked 或 merged。
-14. 可靠 pass 后启用 auto-merge 或 merge。
+2. 检查本地变更和配置的 `danger_paths`。
+3. 必要时运行本地 checks。
+4. commit 当前变更。
+5. push 当前分支。
+6. 创建、更新并 ready PR。
+7. 在当前上下文绑定 `CURRENT_HEAD_SHA=$(git rev-parse HEAD)`。
+8. 等待 `headSha` 等于 `CURRENT_HEAD_SHA` 的 GitHub Claude Code Action review run 完成。
+9. 读取真实 GitHub review surfaces。
+10. 在同一个 WorkTree 修 blocking/important feedback。
+11. 在同一个 skill 内分类 required external CI failure。
+12. 重复直到 pass、blocked 或 merged。
+13. 可靠 pass 后启用 auto-merge 或 merge。
 
 当前 Claude Code session 是唯一 fixer。GitHub Action 只做 reviewer。
 
@@ -125,7 +124,7 @@ Claude Code hook 不只有 shell command 字符串。官方文档列出的 hook 
 | Command | 作用 |
 |---|---|
 | `/24hour-ClaudeCode:setup` | 调用 onboarding skill。 |
-| `/24hour-ClaudeCode:status` | 读取 config、git sync 和当前 PR 状态。 |
+| `/24hour-ClaudeCode:status` | 读取 config、git status 和当前 PR 状态。 |
 | `/24hour-ClaudeCode:disable` | 停止自动触发 review-loop。 |
 | `/24hour-ClaudeCode:enable` | 恢复自动触发 review-loop。 |
 

@@ -8,7 +8,7 @@
 #   - Verify worktree + marketplace plugin presence
 #   - Verify gh CLI auth + workflow scope
 #   - Verify Claude Code Actions workflow YML(s) present
-#   - Verify the worktree branch contains latest origin/default branch
+#   - Update the Superset worktree to origin/main before coding starts
 #   - Install project dependencies (project-specific; see "Dependencies" section)
 #
 # FORBIDDEN here (do these in review-loop skill instead):
@@ -61,9 +61,7 @@ if [[ "$git_common" == */.git ]]; then
 fi
 if [[ -z "$git_dir" || "$git_dir" == "$git_common" ]]; then
   warn "Not in a git worktree (this looks like the main checkout)."
-  echo "      Open a worktree from the latest remote default branch:"
-  echo "        git fetch origin --prune"
-  echo "        git worktree add ../my-feature -b feat/my-feature origin/<default-branch>"
+  echo "      Open a worktree first: git worktree add ../my-feature -b feat/my-feature"
 else
   IS_LINKED_WORKTREE=1
 fi
@@ -103,47 +101,45 @@ else
   warn "Claude/Codex review workflow missing. From main checkout: /24hour-ClaudeCode:setup"
 fi
 
-# ---- 5. Ensure this worktree is based on latest origin/default ----
+# ---- 5. Normalize Superset worktree to origin/main ----
 if (( IS_LINKED_WORKTREE == 1 )); then
-  default_branch=""
-  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-    default_branch="$(gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null || true)"
-  fi
-  if [[ -z "$default_branch" ]]; then
-    default_branch="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##' || true)"
-  fi
-  default_branch="${default_branch:-main}"
-  base_ref="origin/$default_branch"
-
+  target_ref="origin/main"
   if git fetch origin --prune >/dev/null 2>&1; then
-    ok "Fetched origin before base freshness check"
+    ok "Fetched origin before Superset worktree sync"
   else
-    warn "Could not fetch origin; cannot prove this worktree is based on the latest remote default branch."
+    warn "Could not fetch origin; cannot update this Superset worktree."
     echo "      Run: git fetch origin --prune"
     exit 1
   fi
 
-  if ! git rev-parse --verify "$base_ref" >/dev/null 2>&1; then
-    warn "Missing $base_ref after fetch; cannot verify worktree base."
-    echo "      Check remote/default branch configuration, then recreate this worktree from origin."
+  if ! git rev-parse --verify "$target_ref" >/dev/null 2>&1; then
+    warn "Missing $target_ref after fetch; cannot update this Superset worktree."
+    echo "      Check that origin/main exists, then reopen the workspace."
     exit 1
   fi
 
-  if git merge-base --is-ancestor "$base_ref" HEAD; then
-    ok "Worktree branch contains latest $base_ref"
+  current_sha="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+  target_sha="$(git rev-parse "$target_ref")"
+  dirty=0
+  git diff --quiet --ignore-submodules -- || dirty=1
+  git diff --cached --quiet --ignore-submodules -- || dirty=1
+  if [[ -n "$(git ls-files --others --exclude-standard)" ]]; then
+    dirty=1
+  fi
+
+  if [[ "$current_sha" == "$target_sha" && "$dirty" == "0" ]]; then
+    ok "Superset worktree already matches $target_ref"
   else
-    warn "This worktree branch is not based on latest $base_ref."
-    echo "      Before coding, update this branch:"
-    echo "        git fetch origin --prune"
-    echo "        git rebase $base_ref"
-    echo ""
-    echo "      Or recreate it from latest origin:"
-    echo "        cd $MAIN_CHECKOUT"
-    echo "        git worktree remove $WS_PATH"
-    echo "        git branch -D $WS_NAME"
-    echo "        git fetch origin --prune"
-    echo "        git worktree add $WS_PATH -b $WS_NAME $base_ref"
-    exit 1
+    info "Updating Superset worktree to $target_ref"
+    git reset --hard "$target_ref" >/dev/null || {
+      warn "Failed to reset this Superset worktree to $target_ref"
+      exit 1
+    }
+    git clean -fd >/dev/null || {
+      warn "Failed to clean untracked files after resetting this Superset worktree"
+      exit 1
+    }
+    ok "Superset worktree updated to $target_ref ($(git rev-parse --short HEAD))"
   fi
 fi
 
